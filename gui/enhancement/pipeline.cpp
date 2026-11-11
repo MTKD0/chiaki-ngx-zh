@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QThread>
 #include <QFileInfo>
 #include <QDir>
 #include <QFile>
@@ -75,6 +76,10 @@ struct EnhancementPipeline::Impl
         cadenceClock.restart();
     }
     int phaseIntervalMs = 8;
+    // Generated phases are paced in microseconds against one deadline chain per real
+    // frame; whole-millisecond timers alone drift (5 ms instead of 5.56 ms at 3x/60 fps).
+    uint64_t phaseIntervalUs = 8333, phaseDeadlineUs = 0, smoothedIntervalUs = 0;
+    uint64_t nowUs() const { return uint64_t(debugClock.nsecsElapsed() / 1000); }
     unsigned generatedIndex = 0, generatedInOutput = 0;
     uint64_t sourceIntervalUs = 0, presentationCostUs = 0;
     bool presentationLimited = false;
@@ -130,6 +135,12 @@ struct EnhancementPipeline::Impl
         QObject::connect(&realTimer, &QTimer::timeout, q,
                          [this]
                          {
+                             // The timer fires up to a millisecond early; yield through the rest.
+                             while (phaseDeadlineUs) {
+                                 const uint64_t now = nowUs();
+                                 if (now >= phaseDeadlineUs || phaseDeadlineUs - now > 3000) break;
+                                 QThread::yieldCurrentThread();
+                             }
                              if (generated && generatedIndex + 1 < generatedInOutput) {
                                  ++generatedIndex;
                                  generatedFramePresented = false;
@@ -190,6 +201,8 @@ struct EnhancementPipeline::Impl
         resizeTimer.stop();
         watchdog.stop();
         realTimer.stop();
+        phaseDeadlineUs = 0;
+        smoothedIntervalUs = 0;
         ready = false;
         inFlight = false;
         active = 0;
@@ -578,6 +591,12 @@ struct EnhancementPipeline::Impl
                        (options.frameGeneration ? FrameGeneration : 0) |
                        ((options.neural && options.fsr && canUpscale(native, work)) ? Fsr : 0) |
                        (options.bridgeTest ? BridgeTest : 0) | (hdr ? HdrLinear : 0) | (enableVsr ? Vsr : 0);
+        // Default chain: VSR cleans and enlarges the decoded frame before NR and FG.
+        // CHIAKI_ENHANCEMENT_CHAIN=nr-first restores NR at source size before VSR.
+        if (enableVsr && !hdr && qEnvironmentVariable("CHIAKI_ENHANCEMENT_CHAIN").compare(
+                QLatin1String("nr-first"), Qt::CaseInsensitive) != 0)
+            config.flags |= VsrFirst;
+        qInfo() << "[RTX][Chain] vsr_first=" << bool(config.flags & VsrFirst);
         qInfo() << "[RTX][NR] configured_passes=" << config.nrPassCount;
         for (unsigned n = 0; n < config.nrPassCount; ++n) {
             const auto p = passConfig(config, n);
@@ -713,17 +732,24 @@ struct EnhancementPipeline::Impl
                 realTimer.stop();
                 if (generated)
                 {
-                    const uint64_t interval = lastTimestamp && r.timestampUs > lastTimestamp
-                                                  ? r.timestampUs - lastTimestamp
-                                                  : 16667;
-                    phaseIntervalMs = int(std::max<uint64_t>(1, std::min<uint64_t>(50,
-                        interval / (1000 * (generatedInOutput + 1)))));
+                    // Render-entry timestamps carry network/decoder jitter: smooth them and
+                    // ignore gaps, starting from the stream's nominal interval.
+                    const uint64_t nominal = sourceIntervalUs ? sourceIntervalUs : 16667;
+                    uint64_t interval = lastTimestamp && r.timestampUs > lastTimestamp
+                                            ? r.timestampUs - lastTimestamp : nominal;
+                    if (interval > nominal * 3 || interval < nominal / 3)
+                        interval = nominal;
+                    smoothedIntervalUs = smoothedIntervalUs ? (smoothedIntervalUs * 7 + interval) / 8 : nominal;
+                    phaseIntervalUs = std::max<uint64_t>(1000, std::min<uint64_t>(50000,
+                        smoothedIntervalUs / (generatedInOutput + 1)));
+                    phaseIntervalMs = int((phaseIntervalUs + 500) / 1000);
                 }
+                phaseDeadlineUs = 0; // Each real frame starts a new deadline chain.
                 lastTimestamp = r.timestampUs;
                 if (timingClock.elapsed() >= 250) {
                     emit q->timingsChanged(r.nrGpuUs / 1000.0, r.reconstructionGpuUs / 1000.0,
                         r.fgGpuUs / 1000.0, r.vsrGpuUs / 1000.0, r.flowTimeUs / 1000.0,
-                        generated ? (generatedInOutput * phaseIntervalMs) : 0.0, bool(active & Vsr));
+                        generated ? (generatedInOutput * phaseIntervalUs / 1000.0) : 0.0, bool(active & Vsr));
                     timingClock.restart();
                 }
                 report(QString::fromUtf8(r.message) + (presentationLimited
@@ -929,7 +955,13 @@ void EnhancementPipeline::notePresented(uint64_t presentationWorkUs)
         i.reportCadence();
         // Swapchain acquire/render/submit may already have consumed this phase's gap.
         // Never add that time again after a blocking presentation.
-        i.realTimer.start(std::max(0, i.phaseIntervalMs - int(std::min<uint64_t>(1000, presentationWorkUs/1000))));
+        const uint64_t now = i.nowUs();
+        if (!i.phaseDeadlineUs)
+            i.phaseDeadlineUs = now - std::min<uint64_t>(now, presentationWorkUs);
+        i.phaseDeadlineUs += i.phaseIntervalUs;
+        const uint64_t remainingUs = i.phaseDeadlineUs > now ? i.phaseDeadlineUs - now : 0;
+        // Wake one millisecond early; the timeout handler yields up to the deadline.
+        i.realTimer.start(remainingUs > 1500 ? int((remainingUs - 1000) / 1000) : 0);
         if (!i.fgPresented)
         {
             i.fgPresented = true;

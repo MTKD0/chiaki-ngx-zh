@@ -6019,17 +6019,39 @@ void QmlMainWindow::createSwapchain()
     surface_create_failure_first_us = 0;
 
     const int swapchain_depth = 1;
+    // In-app frame generation presents several frames per source interval. Without
+    // VSync, MAILBOX keeps presentation non-blocking and tear-free; it is used only
+    // when the surface reports it, otherwise IMMEDIATE is kept. Applies when the
+    // swapchain is created: toggling FG mid-stream does not recreate it.
+    VkPresentModeKHR unsynced_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    if (!settings->GetVSyncEnabled() && settings->GetEnhancementFrameGeneration()) {
+        const auto surface_modes = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfacePresentModesKHR>(
+            placebo_vk_inst->get_proc_addr(placebo_vk_inst->instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"));
+        uint32_t mode_count = 0;
+        if (surface_modes && surface_modes(placebo_vulkan->phys_device, surface, &mode_count, nullptr) == VK_SUCCESS && mode_count) {
+            std::vector<VkPresentModeKHR> modes(mode_count);
+            const VkResult listed = surface_modes(placebo_vulkan->phys_device, surface, &mode_count, modes.data());
+            if (listed == VK_SUCCESS || listed == VK_INCOMPLETE)
+                for (uint32_t n = 0; n < mode_count && n < modes.size(); ++n)
+                    if (modes[n] == VK_PRESENT_MODE_MAILBOX_KHR)
+                        unsynced_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    }
     struct pl_vulkan_swapchain_params swapchain_params = {
         .surface = surface,
-        // Prefer MAILBOX for vsync (lower) latency when supported).
-        .present_mode = settings->GetVSyncEnabled() ? VK_PRESENT_MODE_FIFO_KHR
-                                                    : VK_PRESENT_MODE_IMMEDIATE_KHR,
+        .present_mode = settings->GetVSyncEnabled() ? VK_PRESENT_MODE_FIFO_KHR : unsynced_mode,
         .swapchain_depth = swapchain_depth,
     };
     placebo_swapchain = pl_vulkan_create_swapchain(placebo_vulkan, &swapchain_params);
-    present_vsync_enabled = swapchain_params.present_mode != VK_PRESENT_MODE_IMMEDIATE_KHR;
+    if (!placebo_swapchain && swapchain_params.present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        qCWarning(chiakiGui) << "Mailbox present mode failed, falling back to IMMEDIATE";
+        swapchain_params.present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        placebo_swapchain = pl_vulkan_create_swapchain(placebo_vulkan, &swapchain_params);
+    }
+    // MAILBOX never blocks on the display, so pacing treats it like IMMEDIATE.
+    present_vsync_enabled = swapchain_params.present_mode == VK_PRESENT_MODE_FIFO_KHR;
     if (!placebo_swapchain && !settings->GetVSyncEnabled()) {
-        qCWarning(chiakiGui) << "Immediate present mode unsupported, falling back to FIFO VSync";
+        qCWarning(chiakiGui) << "Unsynchronized present mode unsupported, falling back to FIFO VSync";
         swapchain_params.present_mode = VK_PRESENT_MODE_FIFO_KHR;
         swapchain_params.swapchain_depth = 1;
         placebo_swapchain = pl_vulkan_create_swapchain(placebo_vulkan, &swapchain_params);
@@ -6037,7 +6059,8 @@ void QmlMainWindow::createSwapchain()
     }
     qCInfo(chiakiGui).nospace()
         << "[present] swapchain_create vsync_setting=" << (settings->GetVSyncEnabled() ? 1 : 0)
-        << " requested_mode=" << (settings->GetVSyncEnabled() ? "FIFO" : "IMMEDIATE")
+        << " requested_mode=" << (settings->GetVSyncEnabled() ? "FIFO"
+            : unsynced_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" : "IMMEDIATE")
         << " selected_mode="
         << (swapchain_params.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "FIFO"
             : swapchain_params.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE"

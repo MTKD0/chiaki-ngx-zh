@@ -8,7 +8,7 @@
 namespace chiaki_enhancement
 {
 constexpr uint32_t Magic = 0x58474e43; // CNGX, little endian, Windows x64 only
-constexpr uint32_t Version = 8;
+constexpr uint32_t Version = 9;
 constexpr unsigned MaxNrPasses = 3;
 constexpr unsigned MaxGeneratedFrames = 3;
 constexpr unsigned SlotCount = 3;
@@ -27,7 +27,9 @@ enum Flag : uint32_t
     BridgeTest = 16,
     // RGBA16F, linear BT.2020, 1.0 = 203 cd/m2. Model inputs remain SDR sRGB.
     HdrLinear = 32,
-    Vsr = 64
+    Vsr = 64,
+    // VSR runs on the decoded frame before NR; NR sizes are then relative to the output.
+    VsrFirst = 128
 };
 enum class Result : uint32_t
 {
@@ -135,6 +137,9 @@ inline NrPassConfig passConfig(const Command &c, unsigned pass)
 }
 inline Extent inputExtent(const Command &c)
 { return c.inputWidth && c.inputHeight ? Extent{c.inputWidth, c.inputHeight} : Extent{c.width, c.height}; }
+// NR percentages apply to this size: the output after a leading VSR, else the worker input.
+inline Extent nrBaseExtent(const Command &c)
+{ return (c.flags & VsrFirst) && (c.flags & Vsr) && !(c.flags & HdrLinear) ? Extent{c.width, c.height} : inputExtent(c); }
 inline bool validPass(const NrPassConfig &p)
 { return p.percent >= 50 && p.percent <= 100 && p.sharpness <= 100 && p.fsr <= 1 && validTuning(p.tuning); }
 inline bool sameNrResources(const Command &a, const Command &b)
@@ -152,10 +157,11 @@ inline bool valid(const Command &c)
            c.percent >= 50 && c.percent <= 100 && c.sharpness <= 100 &&
            c.fgMultiplier >= 2 && c.fgMultiplier <= MaxGeneratedFrames + 1 &&
            c.vsrQuality <= 4 && (!(c.flags & Vsr) || c.vsrQuality > 0) &&
+           (!(c.flags & VsrFirst) || (c.flags & Vsr)) &&
            ((!c.inputWidth && !c.inputHeight) || (c.inputWidth && c.inputHeight && c.inputWidth <= c.width && c.inputHeight <= c.height)) &&
            c.nrPassCount >= 1 && c.nrPassCount <= MaxNrPasses &&
            validTuning(c.nrTuning) && validPass(c.additionalPasses[0]) && validPass(c.additionalPasses[1]) &&
-           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear | Vsr)) &&
+           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear | Vsr | VsrFirst)) &&
            (c.operation == Operation::Shutdown ||
             (c.width && c.height && c.width <= 16384 && c.height <= 16384)) &&
            (c.operation != Operation::Process || (c.slot < SlotCount && (c.fenceValue & 1)));

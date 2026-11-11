@@ -125,6 +125,11 @@ int main()
     changed.vsrQuality = 3; changed.inputWidth = 640; changed.inputHeight = 360;
     changed.width = 1280; changed.height = 720; CHECK(valid(changed));
     CHECK(inputExtent(changed).width == 640);
+    CHECK(nrBaseExtent(changed).width == 640);
+    changed.flags |= VsrFirst; CHECK(valid(changed)); CHECK(nrBaseExtent(changed).width == 1280);
+    changed.flags |= HdrLinear; CHECK(nrBaseExtent(changed).width == 640); changed.flags &= ~uint32_t(HdrLinear);
+    changed.flags &= ~uint32_t(Vsr); CHECK(!valid(changed)); changed.flags |= Vsr;
+    changed.flags &= ~uint32_t(VsrFirst); CHECK(valid(changed));
     changed.inputHeight = 0; CHECK(!valid(changed));
     uint64_t lastGenerated = 0, counted = 0;
     for (unsigned frame = 1; frame <= 30; ++frame)

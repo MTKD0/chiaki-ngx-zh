@@ -14,9 +14,23 @@ SHA256 c3d88eea5ff7a548edefa66414cf6e77464d0947277c904f324dd23abf58a1ed
 
 优先从 [NVIDIA RTX Video SDK](https://developer.nvidia.com/rtx-video-sdk) 或 [NVIDIA NGC 的 SDK 文件](https://catalog.ngc.nvidia.com/orgs/nvidia/multimedia/models/dlpp/1.5/file-browser)取得运行库。此次官方端点连接失败，本机测试 DLL 取自 [dlss5-video-player v0.30.0 的完整程序包](https://github.com/2600th/dlss5-video-player/releases/tag/dlss5-video-player-v0.30.0)，提取后检查 NVIDIA Corporation 的有效 Authenticode 签名、版本及上述哈希，没有运行该程序包中的其他程序。DLL 受 NVIDIA 自身许可约束。
 
-参考 [FzeNiX/chiaki-ng-enhanced](https://github.com/FzeNiX/chiaki-ng-enhanced) 提交 `9e878112dbc89d0edd326ee80a7f8cf55ee9185b` 的 `gui/src/rtxvsr.cpp`：使用 NGX feature 16、`Input1` / `Output`、`Rect.*` / `OutRect.*`、`VSR.QualityLevel` 参数。本项目将其接入现有 MSVC D3D12 增强进程；协议升级为 8，GUI 和增强进程必须同时更新。输入共享纹理保留原始可见区域分辨率，VSR 输出到窗口目标分辨率，随后执行 DLSS FG。
+参考 [FzeNiX/chiaki-ng-enhanced](https://github.com/FzeNiX/chiaki-ng-enhanced) 提交 `9e878112dbc89d0edd326ee80a7f8cf55ee9185b` 的 `gui/src/rtxvsr.cpp`：使用 NGX feature 16、`Input1` / `Output`、`Rect.*` / `OutRect.*`、`VSR.QualityLevel` 参数。本项目将其接入现有 MSVC D3D12 增强进程；协议当前为 9，GUI 和增强进程必须同时更新。输入共享纹理保留原始可见区域分辨率，VSR 输出到窗口目标分辨率，随后执行 DLSS FG。
 
 只接入 1.6.0.0 支持的四档超分模式。参考项目中的 Artifact Reduction / Streaming 扩展模式需要更新运行库，当前不提供这些未验证选项。
+
+## 链路顺序与性能调整（协议 9）
+
+默认顺序为 `解码 → VSR → NR → DLSS FG → 调色 → 呈现`：VSR 先在源分辨率画面上去压缩伪影并放大到窗口目标分辨率，NR 和插帧不再放大串流伪影。此顺序下 NR 分辨率百分比相对于 VSR 输出计算，例如 1080p 串流、1440p 窗口时 75% 即 1920×1080；NR 的差值按普通缩放叠回输出。启动串流前设置环境变量 `CHIAKI_ENHANCEMENT_CHAIN=nr-first` 可恢复旧顺序（NR 在源分辨率 → VSR），用于对比。VSR 运行库缺失或评估失败时，前置阶段改用普通缩放，NR/FG 继续工作。HDR 不受影响。
+
+同时调整：
+
+- 光流始终在源分辨率上计算，向量按比例换算到 NR 和插帧分辨率。不超过 1080p 时默认使用 NVOFA 中等质量档，更大时保持快速档；`CHIAKI_ENHANCEMENT_FLOW_QUALITY=fast|medium|slow` 可覆盖。耗时显示在浮窗的插帧分项里。
+- 每帧的 GPU 阻塞等待由约 8 次减为 3 次：HDR 代理、场景切换缩略图和光流亮度合并为一次提交；缩略图使用常驻回读缓冲；光流参考帧改为交换而不是复制。
+- 插帧输出校验只在增强进程启动后进行一次，场景切换只重置时域历史，不再触发全分辨率 CPU 回读。
+- 生成帧按微秒级截止时间排帧，间隔取串流标称间隔并做平滑，不再使用取整毫秒。
+- 关闭垂直同步且启用应用内 DLSS FG 时，交换链在显示表面支持的情况下使用 MAILBOX（不阻塞、不撕裂），否则保持 IMMEDIATE。该选择在创建交换链时生效，串流中途开关插帧不会切换。
+
+以上调整尚未在 RTX 硬件上构建和实测：提交这些改动的机器没有 MSVC、NGX SDK 和 NVIDIA 驱动。合并前需重新构建 GUI 与增强进程并运行 `enhancement-model-test`、`--self-test` 和桥接测试。
 
 ## 同类功能确认
 

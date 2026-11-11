@@ -504,6 +504,58 @@ struct Gpu
         b.UAV.pResource = out.resource.Get();
         list->ResourceBarrier(1, &b);
     }
+    // Persistent readback for the small scene-cut thumbnail. The copy is recorded
+    // into the caller's open list: no extra submission or allocation per frame.
+    ComPtr<ID3D12Resource> sampleReadback;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT sampleLayout{};
+    UINT64 sampleBytes = 0;
+    void queueSample(Texture &t)
+    {
+        if (!sampleReadback)
+        {
+            auto desc = t.resource->GetDesc();
+            UINT rows = 0;
+            UINT64 rowBytes = 0;
+            device->GetCopyableFootprints(&desc, 0, 1, 0, &sampleLayout, &rows, &rowBytes, &sampleBytes);
+            D3D12_HEAP_PROPERTIES hp{};
+            hp.Type = D3D12_HEAP_TYPE_READBACK;
+            D3D12_RESOURCE_DESC bd{};
+            bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bd.Width = sampleBytes;
+            bd.Height = 1;
+            bd.DepthOrArraySize = 1;
+            bd.MipLevels = 1;
+            bd.SampleDesc.Count = 1;
+            bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                  IID_PPV_ARGS(&sampleReadback)),
+                  "Sample readback buffer");
+        }
+        transition(t, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
+        src.pResource = t.resource.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.pResource = sampleReadback.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst.PlacedFootprint = sampleLayout;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+    // Call after the list containing queueSample() has completed. RGBA8 only.
+    std::vector<uint8_t> sample(const Texture &t)
+    {
+        uint8_t *data = nullptr;
+        D3D12_RANGE range{0, static_cast<SIZE_T>(sampleBytes)};
+        check(sampleReadback->Map(0, &range, reinterpret_cast<void **>(&data)), "Map sample readback");
+        std::vector<uint8_t> result(static_cast<size_t>(t.width) * t.height * 4);
+        for (unsigned y = 0; y < t.height; ++y)
+            std::memcpy(result.data() + static_cast<size_t>(y) * t.width * 4,
+                        data + sampleLayout.Offset + static_cast<size_t>(y) * sampleLayout.Footprint.RowPitch,
+                        static_cast<size_t>(t.width) * 4);
+        D3D12_RANGE empty{0, 0};
+        sampleReadback->Unmap(0, &empty);
+        return result;
+    }
     std::vector<uint8_t> pixels(Texture &t)
     {
         auto desc = t.resource->GetDesc();
@@ -699,7 +751,7 @@ struct OpticalFlow
         if (s != NV_OF_SUCCESS)
             throw std::runtime_error(std::string(w) + ": NVOFA " + std::to_string(s));
     }
-    void init(Gpu &gpu, unsigned w, unsigned h)
+    void init(Gpu &gpu, unsigned w, unsigned h, NV_OF_PERF_LEVEL level)
     {
         module = LoadLibraryExW(L"nvofapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         if (!module)
@@ -716,7 +768,7 @@ struct OpticalFlow
         p.height = h;
         p.outGridSize = NV_OF_OUTPUT_VECTOR_GRID_SIZE_4;
         p.mode = NV_OF_MODE_OPTICALFLOW;
-        p.perfLevel = NV_OF_PERF_LEVEL_FAST;
+        p.perfLevel = level;
         p.inputBufferFormat = NV_OF_BUFFER_FORMAT_GRAYSCALE8;
         ofcheck(api.nvOFInit(handle, &p), "NVOFA init");
         current = gpu.texture(w, h, DXGI_FORMAT_R8_UNORM);
@@ -731,16 +783,25 @@ struct OpticalFlow
             ofcheck(api.nvOFRegisterResourceD3D12(handle, &r), "NVOFA register");
         }
     }
-    void execute(Gpu &gpu, Texture &native, bool reset)
+    // Recorded into the caller's open list, next to the scene-cut thumbnail.
+    void prepare(Gpu &gpu, Texture &source)
     {
-        gpu.begin();
-        gpu.run("grayMain", &native, current);
+        gpu.run("grayMain", &source, current);
         gpu.transition(current, D3D12_RESOURCE_STATE_COMMON);
-        if (!history || reset)
-            gpu.copy(current, previous);
         gpu.transition(previous, D3D12_RESOURCE_STATE_COMMON);
         gpu.transition(vectors, D3D12_RESOURCE_STATE_COMMON);
-        gpu.submit();
+    }
+    // prepare()'s list must have completed. Only a reset costs an extra submission.
+    void execute(Gpu &gpu, bool reset)
+    {
+        if (!history || reset)
+        {
+            gpu.begin();
+            gpu.copy(current, previous);
+            gpu.transition(current, D3D12_RESOURCE_STATE_COMMON);
+            gpu.transition(previous, D3D12_RESOURCE_STATE_COMMON);
+            gpu.submit();
+        }
         NV_OF_EXECUTE_INPUT_PARAMS_D3D12 in{};
         in.inputFrame = cur;
         in.referenceFrame = prev;
@@ -761,12 +822,13 @@ struct OpticalFlow
             throw std::runtime_error(std::string("NVOFA execute: ") + error + " (" +
                                      std::to_string(result) + ")");
         }
-        check(gpu.queue->Wait(gpu.fence.Get(), gpu.tick), "Wait optical flow");
-        gpu.wait();
-        gpu.begin();
-        gpu.copy(current, previous);
-        gpu.transition(previous, D3D12_RESOURCE_STATE_COMMON);
-        gpu.submit();
+        // The flow engine signals this fence value itself: wait for it directly.
+        check(gpu.fence->SetEventOnCompletion(gpu.tick, gpu.event.h), "Wait optical flow");
+        if (WaitForSingleObject(gpu.event.h, 10000) != WAIT_OBJECT_0)
+            throw std::runtime_error("Optical flow did not complete within 10 seconds");
+        // This frame becomes the next reference without a GPU copy.
+        std::swap(current, previous);
+        std::swap(cur, prev);
         history = true;
     }
 };
@@ -786,6 +848,21 @@ struct NrStage
     bool settingsApplied = false;
     Texture reduced, edited, motion, depth, upInput, upOutput, composite, proxy, sharpened;
 };
+// Flow runs on source-resolution pixels. CHIAKI_ENHANCEMENT_FLOW_QUALITY=fast|medium|slow
+// overrides the default: medium up to 1080p, fast above.
+static NV_OF_PERF_LEVEL flowLevel(Extent size)
+{
+    wchar_t value[16] = {};
+    const DWORD length = GetEnvironmentVariableW(L"CHIAKI_ENHANCEMENT_FLOW_QUALITY", value, 16);
+    if (length && length < 16)
+    {
+        if (_wcsicmp(value, L"fast") == 0) return NV_OF_PERF_LEVEL_FAST;
+        if (_wcsicmp(value, L"medium") == 0) return NV_OF_PERF_LEVEL_MEDIUM;
+        if (_wcsicmp(value, L"slow") == 0) return NV_OF_PERF_LEVEL_SLOW;
+    }
+    return static_cast<uint64_t>(size.width) * size.height <= 1920ull * 1088ull
+               ? NV_OF_PERF_LEVEL_MEDIUM : NV_OF_PERF_LEVEL_FAST;
+}
 struct Worker
 {
     std::unique_ptr<Gpu> gpu;
@@ -864,9 +941,13 @@ struct Worker
                   "Create shared fence");
         }
         thumbnail = gpu->texture(64, 36);
-        if (hdr || inputSize.width != c.width || inputSize.height != c.height)
-            opticalProxy = gpu->texture(c.width, c.height);
-        auto extent = nrExtent(inputSize.width, inputSize.height, c.percent);
+        // Optical flow reads source-resolution pixels; only HDR needs an SDR proxy.
+        if (hdr) opticalProxy = gpu->texture(inputSize.width, inputSize.height);
+        const auto nrBase = nrBaseExtent(c);
+        std::fprintf(stderr, "[RTX][Chain] order=%s input=%ux%u nr_base=%ux%u output=%ux%u\n",
+            (c.flags & Vsr) && !hdr ? ((c.flags & VsrFirst) ? "VSR>NR>FG" : "NR>VSR>FG") : "NR>FG",
+            inputSize.width, inputSize.height, nrBase.width, nrBase.height, c.width, c.height);
+        auto extent = nrExtent(nrBase.width, nrBase.height, c.percent);
         reply.width = extent.width;
         reply.height = extent.height;
         if (c.flags & Neural)
@@ -878,7 +959,7 @@ struct Worker
                 {
                     auto &stage = nrStages[creatingPass];
                     const auto settings = passConfig(c, creatingPass);
-                    const auto size = nrExtent(inputSize.width, inputSize.height, settings.percent);
+                    const auto size = nrExtent(nrBase.width, nrBase.height, settings.percent);
                     stage.feature = std::make_shared<NgxFeature>();
                     if (creatingPass == 0) stage.feature->load(*gpu, runtimeDir / L"nvngx_dlssnr.dll");
                     else stage.feature->shareRuntime(nrStages[0].feature);
@@ -893,12 +974,12 @@ struct Worker
                     stage.edited = gpu->texture(size.width, size.height);
                     stage.motion = gpu->texture(size.width, size.height, DXGI_FORMAT_R16G16_FLOAT);
                     stage.depth = gpu->texture(size.width, size.height, DXGI_FORMAT_R32_FLOAT);
-                    stage.upInput = gpu->texture(inputSize.width, inputSize.height);
-                    stage.upOutput = gpu->texture(inputSize.width, inputSize.height);
-                    stage.composite = gpu->texture(inputSize.width, inputSize.height, colorFormat);
+                    stage.upInput = gpu->texture(nrBase.width, nrBase.height);
+                    stage.upOutput = gpu->texture(nrBase.width, nrBase.height);
+                    stage.composite = gpu->texture(nrBase.width, nrBase.height, colorFormat);
                     if (hdr) {
-                        stage.proxy = gpu->texture(inputSize.width, inputSize.height);
-                        stage.sharpened = gpu->texture(inputSize.width, inputSize.height);
+                        stage.proxy = gpu->texture(nrBase.width, nrBase.height);
+                        stage.sharpened = gpu->texture(nrBase.width, nrBase.height);
                     }
                     std::fprintf(stderr, "[RTX][NR][Pass%u] created %ux%u percent=%u fsr=%u sharpness=%u\n",
                         creatingPass + 1, size.width, size.height, settings.percent, settings.fsr, settings.sharpness);
@@ -913,6 +994,9 @@ struct Worker
         }
         if ((c.flags & Vsr) && hdr) vsrError = "VSR requires SDR; ordinary HDR scaling retained";
         if ((c.flags & Vsr) && !hdr) {
+            // Allocated outside the try: a leading VSR stage still defines NR's size
+            // (filled by ordinary scaling) when the runtime is unavailable.
+            vsrOutput = gpu->texture(c.width, c.height);
             try {
                 vsr = std::make_unique<NgxFeature>();
                 vsr->load(*gpu, runtimeDir / L"nvngx_vsr.dll");
@@ -922,7 +1006,6 @@ struct Worker
                 ngxCheck(vsr->create(gpu->list.Get(), static_cast<NVSDK_NGX_Feature>(16),
                     &vsr->parameters, &vsr->handle), "Create VSR");
                 gpu->submit();
-                vsrOutput = gpu->texture(c.width, c.height);
                 std::fprintf(stderr, "[RTX][VSR] ready quality=%u input=%ux%u output=%ux%u\n",
                     c.vsrQuality, inputSize.width, inputSize.height, c.width, c.height);
             } catch (const std::exception &e) {
@@ -973,7 +1056,9 @@ struct Worker
             try
             {
                 optical.reset(new OpticalFlow);
-                optical->init(*gpu, c.width, c.height);
+                const auto level = flowLevel(inputSize);
+                optical->init(*gpu, inputSize.width, inputSize.height, level);
+                std::fprintf(stderr, "[RTX][Flow] size=%ux%u perf_level=%d\n", inputSize.width, inputSize.height, int(level));
             }
             catch (const std::exception &e)
             {
@@ -1058,24 +1143,26 @@ struct Worker
         LARGE_INTEGER begin, end, freq;
         QueryPerformanceFrequency(&freq);
         QueryPerformanceCounter(&begin);
+        // Queue-side wait only: the first submission below is ordered after the producer.
         check(gpu->queue->Wait(s.fence.Get(), c.fenceValue), "Wait for Vulkan producer");
-        gpu->wait();
         const bool hdr = (c.flags & HdrLinear) != 0;
         const auto inputSize = inputExtent(c);
-        Texture *flowInput = &s.input;
-        if (optical && opticalProxy.resource) {
-            gpu->begin();
-            gpu->run(hdr ? "hdrProxyMain" : "scaleMain", &s.input, opticalProxy);
-            gpu->submit();
-            flowInput = &opticalProxy;
-        }
+        const auto nrBase = nrBaseExtent(c);
         bool reset = (c.flags & Reset) || !history;
         if (optical)
         {
+            // One submission: HDR proxy, scene-cut thumbnail and the flow luma.
+            Texture *flowInput = &s.input;
             gpu->begin();
+            if (hdr) {
+                gpu->run("hdrProxyMain", &s.input, opticalProxy);
+                flowInput = &opticalProxy;
+            }
             gpu->run("scaleMain", flowInput, thumbnail);
+            gpu->queueSample(thumbnail);
+            optical->prepare(*gpu, *flowInput);
             gpu->submit();
-            auto sample = gpu->pixels(thumbnail);
+            auto sample = gpu->sample(thumbnail);
             if (!reset && sample.size() == previousThumbnail.size())
             {
                 uint64_t difference = 0;
@@ -1101,7 +1188,7 @@ struct Worker
         {
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] first optical-flow dispatch\n");
-            optical->execute(*gpu, *flowInput, reset);
+            optical->execute(*gpu, reset);
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] optical-flow completed\n");
         }
@@ -1111,6 +1198,38 @@ struct Worker
             gpu->mark(k);
         Texture *processed = &s.input;
         uint32_t active = c.flags & BridgeTest;
+        const bool vsrFirst = (c.flags & VsrFirst) && !hdr && vsrOutput.resource;
+        auto runVsr = [&]()
+        {
+            if (vsr) {
+                gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                gpu->transition(vsrOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                vsr->resource("Input1", *processed);
+                vsr->resource("Output", vsrOutput);
+                auto &p = vsr->parameters;
+                for (const char *key : {"Rect.X", "Rect.Y", "OutRect.X", "OutRect.Y"}) p.Set(key, 0u);
+                p.Set("Rect.W", processed->width); p.Set("Rect.H", processed->height);
+                p.Set("OutRect.W", c.width); p.Set("OutRect.H", c.height);
+                p.Set("VSR.QualityLevel", c.vsrQuality);
+                gpu->mark(MaxNrPasses * 4 + 2);
+                try {
+                    vsr->eval(*gpu);
+                    processed = &vsrOutput;
+                    active |= Vsr;
+                } catch (const std::exception &e) {
+                    // Finish and retire all queued references before releasing the feature.
+                    gpu->submit(); vsrError = e.what(); vsr.reset(); gpu->begin();
+                    std::fprintf(stderr, "[RTX][VSR] evaluation failed; ordinary scaling restored: %s\n", e.what());
+                }
+                gpu->mark(MaxNrPasses * 4 + 3);
+            }
+            // A leading stage must hand NR an output-size frame, also without the runtime.
+            if (vsrFirst && processed != &vsrOutput) {
+                gpu->run("scaleMain", processed, vsrOutput);
+                processed = &vsrOutput;
+            }
+        };
+        if (vsrFirst) runVsr();
         if (hasNr())
         {
             bool upstreamChanged = false;
@@ -1131,7 +1250,7 @@ struct Worker
                 }
                 gpu->run("scaleMain", modelInput, reduced);
                 gpu->run("motionMain", nullptr, motion, nullptr, nullptr, &optical->vectors, 0,
-                         float(reduced.width) / c.width, float(reduced.height) / c.height);
+                         float(reduced.width) / inputSize.width, float(reduced.height) / inputSize.height);
                 gpu->run("zeroMain", nullptr, depth);
                 gpu->transition(reduced, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 gpu->transition(motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1180,7 +1299,7 @@ struct Worker
                 gpu->mark(pass * 4 + 1);
                 gpu->mark(pass * 4 + 2);
                 active |= Neural;
-                const bool upscale = reduced.width < inputSize.width || reduced.height < inputSize.height;
+                const bool upscale = reduced.width < nrBase.width || reduced.height < nrBase.height;
                 const bool fsr = upscale && settings.fsr;
                 const char *scaler = fsr ? "easuMain" : "scaleMain";
                 if (upscale)
@@ -1217,28 +1336,7 @@ struct Worker
                 gpu->mark(pass * 4 + 3);
             }
         }
-        if (vsr) {
-            gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            gpu->transition(vsrOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            vsr->resource("Input1", *processed);
-            vsr->resource("Output", vsrOutput);
-            auto &p = vsr->parameters;
-            for (const char *key : {"Rect.X", "Rect.Y", "OutRect.X", "OutRect.Y"}) p.Set(key, 0u);
-            p.Set("Rect.W", processed->width); p.Set("Rect.H", processed->height);
-            p.Set("OutRect.W", c.width); p.Set("OutRect.H", c.height);
-            p.Set("VSR.QualityLevel", c.vsrQuality);
-            gpu->mark(MaxNrPasses * 4 + 2);
-            try {
-                vsr->eval(*gpu);
-                processed = &vsrOutput;
-                active |= Vsr;
-            } catch (const std::exception &e) {
-                // Finish and retire all queued references before releasing the feature.
-                gpu->submit(); vsrError = e.what(); vsr.reset(); gpu->begin();
-                std::fprintf(stderr, "[RTX][VSR] evaluation failed; ordinary scaling restored: %s\n", e.what());
-            }
-            gpu->mark(MaxNrPasses * 4 + 3);
-        }
+        if (!vsrFirst) runVsr();
         if (processed->width != s.real.width || processed->height != s.real.height)
             gpu->run("scaleMain", processed, s.real);
         else gpu->copy(*processed, s.real);
@@ -1246,7 +1344,9 @@ struct Worker
 
         if (fg)
         {
-            gpu->run("motionMain", nullptr, fullMotion, nullptr, nullptr, &optical->vectors);
+            // Source-resolution flow vectors, expressed in output pixels.
+            gpu->run("motionMain", nullptr, fullMotion, nullptr, nullptr, &optical->vectors, 0,
+                     float(c.width) / inputSize.width, float(c.height) / inputSize.height);
             gpu->run("zeroMain", nullptr, fullDepth);
             gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1325,8 +1425,8 @@ struct Worker
         gpu->resolveTimers();
         gpu->submit();
         auto stageTimes = gpu->timings();
-        if (reset)
-            fgVerified = false;
+        // Verified once per worker: a scene cut resets history, it does not change the
+        // runtime route, so it must not trigger full-resolution CPU readbacks again.
         if (fg && !fgVerified)
         {
             auto real = gpu->pixels(s.real);
@@ -1396,8 +1496,8 @@ struct Worker
         r.fenceValue = c.fenceValue + 1;
         r.activeFlags = active;
         r.generatedCount = (active & FrameGeneration) ? c.fgMultiplier - 1 : 0;
-        r.width = nrExtent(c.width, c.height, c.percent).width;
-        r.height = nrExtent(c.width, c.height, c.percent).height;
+        r.width = nrExtent(nrBase.width, nrBase.height, c.percent).width;
+        r.height = nrExtent(nrBase.width, nrBase.height, c.percent).height;
         r.flowTimeUs = static_cast<uint64_t>((flowEnd.QuadPart - flowBegin.QuadPart) * 1000000 /
                                              freq.QuadPart);
         for (unsigned pass = 0; hasNr() && pass < c.nrPassCount; ++pass) {
