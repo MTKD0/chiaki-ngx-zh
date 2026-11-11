@@ -132,6 +132,8 @@ int main(int argc, char **argv)
         QElapsedTimer measuredCadence;
         options.percent = argument("--percent", 65);
         options.sharpness = argument("--sharpness", 0);
+        options.fgMultiplier = unsigned(argument("--multiplier", 2));
+        if (options.fgMultiplier < 2 || options.fgMultiplier > 4) return 2;
         options.nrPassCount = qBound(1, argument("--passes", 1), 3);
         for (unsigned n = 1; n < options.nrPassCount; ++n) {
             auto &p = options.additionalPasses[n - 1];
@@ -325,6 +327,7 @@ int main(int argc, char **argv)
                 }
                 if (!processing || pipeline.completedFrameId() != id)
                     return;
+                if (options.frameGeneration && pipeline.generatedOutput()) return;
                 pl_frame frame{};
                 if (!pipeline.outputFrame(frame))
                     return;
@@ -419,9 +422,9 @@ int main(int argc, char **argv)
                         app.quit();
                         return;
                     }
-                    if (present && options.frameGeneration &&
+                    if ((present || app.arguments().contains("--verify-phases")) && options.frameGeneration &&
                         (pipeline.realPresentedCount() + 2 < uint64_t(completed) ||
-                         pipeline.generatedPresentedCount() + 2 < uint64_t(completed))) {
+                         pipeline.generatedPresentedCount() + 2 * (options.fgMultiplier - 1) < uint64_t(completed) * (options.fgMultiplier - 1))) {
                         qCritical() << "FG did not present both real and generated phases";
                         app.quit(); return;
                     }

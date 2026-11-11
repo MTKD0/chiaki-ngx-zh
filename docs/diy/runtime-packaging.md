@@ -2,7 +2,7 @@
 
 ## NVIDIA runtime and SM86 distinction
 
-`nvngx_dlssg.dll` is NVIDIA’s Frame Generation runtime. Official FG supports RTX 40 and 50 series; Multi Frame Generation is a separate capability. Chiaki-ngx currently requests 2× FG and has not validated native FG on every supported GPU.
+`nvngx_dlssg.dll` is NVIDIA’s Frame Generation runtime. Official FG supports RTX 40 and 50 series; Multi Frame Generation is a separate capability. Chiaki-ngx offers 2× FG and 3×/4× on compatible GeForce RTX 50-series adapters. Synthetic multi-frame checks passed on an RTX 5070 Ti Laptop GPU; other GPUs and live streaming remain unverified.
 
 The previously used outer DLL exactly matches the Git blob in [NVIDIA/DLSS, Windows x64 release](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/lib/Windows_x86_64/rel/nvngx_dlssg.dll). The SM86 bundle’s [third-party notice](https://github.com/sdli1995/dlssg_for_sm86/blob/6dcfd54c51e7fc2eb4fe25e5bb16044809c647b5/THIRD_PARTY_NOTICES.txt) identifies its own copy as unmodified NVIDIA material. Both inspected files have valid NVIDIA Authenticode signatures; they differ despite equal version and size. The unofficial changes are in SM86’s proxy, backend and derived kernel pack, which hook runtime execution.
 

@@ -343,12 +343,12 @@ Totals: %4 real · %5 generated</source>
 累计：%4 真实帧 · %5 生成帧</translation>
     </message>
     <message>
-        <location line="+56"/>
+        <location line="+59"/>
         <source>Enhancement worker timed out; ordinary playback restored</source>
         <translation>增强进程超时，已恢复普通播放</translation>
     </message>
     <message>
-        <location line="+22"/>
+        <location line="+27"/>
         <source>Enhancement worker: </source>
         <translation>增强进程：</translation>
     </message>
@@ -363,12 +363,12 @@ Totals: %4 real · %5 generated</source>
         <translation>增强进程通信写入失败</translation>
     </message>
     <message>
-        <location line="+39"/>
+        <location line="+40"/>
         <source>No enhanced frames presented</source>
         <translation>尚未显示增强后的画面</translation>
     </message>
     <message>
-        <location line="+270"/>
+        <location line="+277"/>
         <source>Enhancements require Windows x64</source>
         <translation>增强功能需要 Windows x64</translation>
     </message>
@@ -393,7 +393,7 @@ Totals: %4 real · %5 generated</source>
         <translation>未安装增强进程（enhancement/nvngx.dll）</translation>
     </message>
     <message>
-        <location line="+55"/>
+        <location line="+56"/>
         <source>Starting enhancement worker…</source>
         <translation>正在启动增强进程…</translation>
     </message>
@@ -403,7 +403,12 @@ Totals: %4 real · %5 generated</source>
         <translation>增强进程协议版本不兼容</translation>
     </message>
     <message>
-        <location line="+13"/>
+        <location line="+6"/>
+        <source>DLSS FG returned an invalid generated frame count</source>
+        <translation>DLSS FG 返回的生成帧数量无效</translation>
+    </message>
+    <message>
+        <location line="+12"/>
         <source>Enhancement worker returned a stale configuration</source>
         <translation>增强进程返回了过期配置</translation>
     </message>
@@ -418,12 +423,12 @@ Totals: %4 real · %5 generated</source>
         <translation>增强协议错误：预期帧 %1、槽位 %2、栅栏 %3，收到帧 %4、槽位 %5、栅栏 %6；已恢复普通播放，控制项仍可使用</translation>
     </message>
     <message>
-        <location line="+13"/>
+        <location line="+16"/>
         <source>Output ownership transfer failed</source>
         <translation>输出资源所有权移交失败</translation>
     </message>
     <message>
-        <location line="+43"/>
+        <location line="+47"/>
         <source>; FG presentation skipped to preserve real FPS</source>
         <translation>；为保持真实帧率，已跳过生成帧显示</translation>
     </message>
@@ -549,11 +554,12 @@ Totals: %4 real · %5 generated</source>
     <message>
         <location line="+9"/>
         <location line="+177"/>
+        <location line="+148"/>
         <source>Enable</source>
         <translation>启用</translation>
     </message>
     <message>
-        <location line="-164"/>
+        <location line="-312"/>
         <source>NR passes</source>
         <translation>NR 渲染遍数</translation>
     </message>
@@ -674,14 +680,14 @@ Totals: %4 real · %5 generated</source>
     </message>
     <message>
         <location line="+3"/>
-        <location line="+154"/>
+        <location line="+215"/>
         <location line="+1"/>
         <location line="+1"/>
         <source>Off</source>
         <translation>关闭</translation>
     </message>
     <message>
-        <location line="-148"/>
+        <location line="-209"/>
         <source>Skin Structure requires Automatic Mask</source>
         <translation>皮肤结构调整需要启用自动蒙版</translation>
     </message>
@@ -736,12 +742,42 @@ Totals: %4 real · %5 generated</source>
         <translation>帧生成</translation>
     </message>
     <message>
-        <location line="+4"/>
-        <source>2× (experimental)</source>
-        <translation>2 倍（实验性）</translation>
+        <location line="+17"/>
+        <source>Frame generation method</source>
+        <translation>插帧方式</translation>
     </message>
     <message>
-        <location line="+34"/>
+        <location line="+10"/>
+        <source>Turn Smooth Motion off in NVIDIA App before using DLSS FG.</source>
+        <translation>使用 DLSS FG 前，请在 NVIDIA App 中关闭 Smooth Motion。</translation>
+    </message>
+    <message>
+        <location line="+7"/>
+        <source>Frame generation multiplier</source>
+        <translation>插帧倍数</translation>
+    </message>
+    <message>
+        <location line="+19"/>
+        <source>smooth motion is driver-based 2x frame generation. In NVIDIA App, open Graphics &gt; Program settings, add the main program below and enable Smooth Motion, then restart Chiaki. Selecting this method disables in-app DLSS FG; NVIDIA App activation cannot be verified here. Requires a compatible RTX 40/50 GPU, driver and Vulkan renderer. App FPS does not include driver-generated frames.</source>
+        <translation>smooth motion 由驱动实现 2x 插帧。请在 NVIDIA App 的“图形 → 程序设置”中添加下方主程序，开启 Smooth Motion，再重新启动 Chiaki。选择此方式会停用应用内的 DLSS FG；本程序无法确认 NVIDIA App 中是否已启用。需要兼容的 RTX 40/50 显卡、驱动和 Vulkan 渲染器。应用内帧率不包含驱动生成帧。</translation>
+    </message>
+    <message>
+        <location line="+5"/>
+        <source>Copy main program path</source>
+        <translation>复制主程序路径</translation>
+    </message>
+    <message>
+        <location line="+8"/>
+        <source>DLSS FG: 2x on supported RTX GPUs; 3x/4x requires a supported RTX 50-series GPU and runtime. Use a display refresh rate at least stream FPS times the multiplier. Turn Smooth Motion off in NVIDIA App before using DLSS FG to avoid stacking frame generation.</source>
+        <translation>DLSS FG：受支持的 RTX 显卡可用 2x；3x/4x 需要受支持的 RTX 50 系列显卡和运行库。建议显示器刷新率不低于串流帧率 × 插帧倍数。使用 DLSS FG 前，请在 NVIDIA App 中关闭 Smooth Motion，避免叠加插帧。</translation>
+    </message>
+    <message>
+        <location line="+7"/>
+        <source>To disable smooth motion, turn it off in NVIDIA App. The in-app checkbox does not change driver settings.</source>
+        <translation>若要关闭 smooth motion，请在 NVIDIA App 中关闭。应用内复选框不会修改驱动设置。</translation>
+    </message>
+    <message>
+        <location line="+26"/>
         <source>Active: NR %1 · FSR %2 · FG %3</source>
         <translation>运行状态：NR %1 · FSR %2 · 帧生成 %3</translation>
     </message>
@@ -2715,7 +2751,7 @@ Reason: %1</source>
         <translation>窗口可见时 Vulkan 交换链反复失败，本次启动改用 OpenGL。</translation>
     </message>
     <message>
-        <location line="+913"/>
+        <location line="+914"/>
         <source>%1
 Display %2 Hz · VSync %3%4</source>
         <translation>%1
@@ -2754,7 +2790,7 @@ Real %2 / FG %3</source>
 <context>
     <name>QmlSettings</name>
     <message>
-        <location filename="../src/qmlsettings.cpp" line="+2081"/>
+        <location filename="../src/qmlsettings.cpp" line="+2082"/>
         <source>Export %1 Profile To File</source>
         <translation>导出 %1 配置到文件</translation>
     </message>
@@ -4374,7 +4410,7 @@ Please use Steam to map controller or disable Steam Input for the controller bef
 <context>
     <name>StatsOverlayWidget</name>
     <message>
-        <location filename="../src/qmlmainwindow.cpp" line="-7874"/>
+        <location filename="../src/qmlmainwindow.cpp" line="-7875"/>
         <source>FPS</source>
         <translation>FPS</translation>
     </message>

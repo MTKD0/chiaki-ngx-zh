@@ -9,6 +9,7 @@
 #include <QStandardPaths>
 #include <QFileDialog>
 #include <QApplication>
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QProcess>
 
@@ -2251,8 +2252,14 @@ bool QmlSettings::enhancementFsr() const { return settings->GetEnhancementPassFs
 void QmlSettings::setEnhancementFsr(bool value) { settings->SetEnhancementPassFsr(enhancement_editing_pass, value); emit enhancementChanged(); }
 int QmlSettings::enhancementSharpness() const { return settings->GetEnhancementPassSharpness(enhancement_editing_pass); }
 void QmlSettings::setEnhancementSharpness(int value) { settings->SetEnhancementPassSharpness(enhancement_editing_pass, value); emit enhancementChanged(); }
-bool QmlSettings::enhancementFrameGeneration() const { return settings->GetEnhancementFrameGeneration(); }
+bool QmlSettings::enhancementFrameGeneration() const { return settings->GetEnhancementFrameGenerationEnabled(); }
 void QmlSettings::setEnhancementFrameGeneration(bool value) { settings->SetEnhancementFrameGeneration(value); emit enhancementChanged(); }
+int QmlSettings::enhancementFrameGenerationBackend() const { return settings->GetEnhancementFrameGenerationBackend(); }
+void QmlSettings::setEnhancementFrameGenerationBackend(int value) { settings->SetEnhancementFrameGenerationBackend(value); emit enhancementChanged(); }
+int QmlSettings::enhancementFrameGenerationMultiplier() const { return settings->GetEnhancementFrameGenerationMultiplier(); }
+void QmlSettings::setEnhancementFrameGenerationMultiplier(int value) { settings->SetEnhancementFrameGenerationMultiplier(value); emit enhancementChanged(); }
+QString QmlSettings::applicationExecutable() const { return QDir::toNativeSeparators(QCoreApplication::applicationFilePath()); }
+void QmlSettings::copyApplicationPath() { QApplication::clipboard()->setText(applicationExecutable()); }
 
 QString QmlSettings::rendererShortcut() const
 {
@@ -2298,7 +2305,8 @@ void QmlSettings::resetScreenshotShortcut()
 void QmlSettings::logDiagnosticSettings()
 {
     qInfo().nospace() << "[RTX][Config] nr=" << enhancementNeural() << " passes=" << enhancementPassCount()
-        << " customize_each_pass=" << enhancementCustomizePasses() << " fg=" << enhancementFrameGeneration();
+        << " customize_each_pass=" << enhancementCustomizePasses() << " fg=" << enhancementFrameGeneration()
+        << " fg_backend=" << enhancementFrameGenerationBackend() << " fg_multiplier=" << enhancementFrameGenerationMultiplier();
     for (int pass = 0; pass < enhancementPassCount(); ++pass) {
         const auto p = settings->GetEnhancementEffectivePassConfig(pass);
         qInfo().noquote() << QStringLiteral("[RTX][NR][Pass%1]").arg(pass + 1)

@@ -65,6 +65,9 @@ class Backend : public QObject
         settingsMap.insert("enhancementFsr", true);
         settingsMap.insert("enhancementSharpness", 20);
         settingsMap.insert("enhancementFrameGeneration", false);
+        settingsMap.insert("enhancementFrameGenerationBackend", 1);
+        settingsMap.insert("enhancementFrameGenerationMultiplier", 2);
+        settingsMap.insert("applicationExecutable", "E:/test/chiaki.exe");
         windowMap.insert("enhancementUpscalingEligible", false);
         windowMap.insert("enhancementNeuralAvailable", true);
         windowMap.insert("enhancementCadence", "No enhanced frames presented");
@@ -110,6 +113,26 @@ int main(int argc, char **argv)
          sharp = root->findChild<QObject *>("sharpness"),
          fg = root->findChild<QObject *>("fgToggle"), scale = root->findChild<QObject *>("nrScale");
     CHECK(nr && fsr && sharp && fg && scale);
+    auto fgBackend = root->findChild<QObject *>("fgBackend");
+    auto fgMultiplier = root->findChild<QObject *>("fgMultiplier");
+    auto smoothHelp = root->findChild<QObject *>("smoothMotionHelp");
+    CHECK(fgBackend && fgMultiplier && smoothHelp);
+    CHECK(fgMultiplier->property("count").toInt() == 3);
+    CHECK(QMetaObject::invokeMethod(fgMultiplier, "activated", Q_ARG(int, 2)));
+    CHECK(backend.settings()->value("enhancementFrameGenerationMultiplier").toInt() == 4);
+    CHECK(QMetaObject::invokeMethod(fgBackend, "activated", Q_ARG(int, 1)));
+    app.processEvents();
+    CHECK(backend.settings()->value("enhancementFrameGenerationBackend").toInt() == 2);
+    CHECK(fgMultiplier->property("count").toInt() == 1);
+    CHECK(!fgMultiplier->property("enabled").toBool());
+    CHECK(fgMultiplier->property("currentIndex").toInt() == 0);
+    CHECK(smoothHelp->property("visible").toBool());
+    CHECK(smoothHelp->property("text").toString().contains("E:/test/chiaki.exe"));
+    CHECK(QMetaObject::invokeMethod(fgBackend, "activated", Q_ARG(int, 0)));
+    app.processEvents();
+    CHECK(fgMultiplier->property("count").toInt() == 3);
+    CHECK(fgMultiplier->property("currentIndex").toInt() == 2);
+    CHECK(!smoothHelp->property("visible").toBool());
     auto passCount = root->findChild<QObject *>("nrPassCount");
     auto editingPass = root->findChild<QObject *>("nrEditingPass");
     CHECK(passCount && editingPass);

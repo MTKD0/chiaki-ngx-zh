@@ -74,7 +74,8 @@ struct EnhancementPipeline::Impl
         previousRealCount = realCount; previousGeneratedCount = generatedCount;
         cadenceClock.restart();
     }
-    int halfIntervalMs = 8;
+    int phaseIntervalMs = 8;
+    unsigned generatedIndex = 0, generatedInOutput = 0;
     uint64_t sourceIntervalUs = 0, presentationCostUs = 0;
     bool presentationLimited = false;
     uint32_t capabilities = 0, active = 0;
@@ -90,6 +91,8 @@ struct EnhancementPipeline::Impl
     struct Slot
     {
         Image input, real, generated;
+        std::array<Image, MaxGeneratedFrames - 1> additionalGenerated;
+        Image &generatedFrame(unsigned n) { return n == 0 ? generated : additionalGenerated[n - 1]; }
         VkSemaphore fence = VK_NULL_HANDLE;
         uint64_t value = 0;
         pl_color_space color = pl_color_space_srgb;
@@ -126,7 +129,12 @@ struct EnhancementPipeline::Impl
         QObject::connect(&realTimer, &QTimer::timeout, q,
                          [this]
                          {
-                             generated = false;
+                             if (generated && generatedIndex + 1 < generatedInOutput) {
+                                 ++generatedIndex;
+                                 generatedFramePresented = false;
+                             } else {
+                                 generated = false;
+                             }
                              emit q->frameAvailable();
                          });
         QObject::connect(&process, &QProcess::started, q,
@@ -192,6 +200,7 @@ struct EnhancementPipeline::Impl
         realCount = generatedCount = previousRealCount = previousGeneratedCount = 0;
         cadenceClock.restart();
         generated = false;
+        generatedIndex = generatedInOutput = 0;
         outputSlot = -1;
         submitSlot = -1;
         // An unsuccessful worker must never leave Vulkan waiting on an unsignaled
@@ -222,7 +231,7 @@ struct EnhancementPipeline::Impl
                 qInfo() << "[RTX][Cleanup] GPU finished";
             for (auto &s : resources)
             {
-                for (Image *i : {&s.input, &s.real, &s.generated})
+                for (Image *i : {&s.input, &s.real, &s.generated, &s.additionalGenerated[0], &s.additionalGenerated[1]})
                 {
                     if (i->texture && !i->held)
                     {
@@ -401,6 +410,14 @@ struct EnhancementPipeline::Impl
                 if (h)
                     CloseHandle(h);
             }
+            for (unsigned n = 1; n < MaxGeneratedFrames; ++n) {
+                const auto source = r.resources[i].additionalGenerated[n - 1];
+                if (n < r.generatedCount && !source) okay = false;
+                if (!source) continue;
+                HANDLE extra = duplicate(source);
+                if (okay) okay = importImage(s.generatedFrame(n), extra);
+                if (extra) CloseHandle(extra);
+            }
             HANDLE h = duplicate(r.resources[i].fence);
             if (okay)
             {
@@ -464,7 +481,7 @@ struct EnhancementPipeline::Impl
     }
     void release(Image &i, Slot &s, uint64_t value)
     {
-        if (!i.held)
+        if (!i.texture || !i.held)
             return;
         pl_vulkan_release_params p{};
         p.tex = i.texture;
@@ -545,6 +562,7 @@ struct EnhancementPipeline::Impl
         config.revision = ++revision;
         config.percent = unsigned(options.percent);
         config.sharpness = unsigned(options.sharpness);
+        config.fgMultiplier = options.fgMultiplier;
         config.nrPassCount = options.nrPassCount;
         config.nrTuning = options.nrTuning;
         std::copy(options.additionalPasses.begin(), options.additionalPasses.end(), config.additionalPasses);
@@ -589,6 +607,11 @@ struct EnhancementPipeline::Impl
             r.message[sizeof(r.message) - 1] = 0;
             if (r.revision && r.revision < config.revision)
                 continue; // A retired worker/configuration cannot affect the current stream.
+            if (r.generatedCount > MaxGeneratedFrames ||
+                ((r.activeFlags & FrameGeneration) && r.generatedCount != config.fgMultiplier - 1)) {
+                fail(QCoreApplication::translate("EnhancementPipeline", "DLSS FG returned an invalid generated frame count"));
+                return;
+            }
             if (r.result == Result::Error)
             {
                 fail(QString::fromUtf8(r.message));
@@ -637,7 +660,10 @@ struct EnhancementPipeline::Impl
                 {
                     auto &old = resources[outputSlot];
                     // Complete all reads before this slot can become a producer.
-                    if (!holdLocal(old.real) || !holdLocal(old.generated))
+                    bool returned = holdLocal(old.real) && holdLocal(old.generated);
+                    for (auto &extra : old.additionalGenerated)
+                        if (extra.texture) returned = holdLocal(extra) && returned;
+                    if (!returned)
                     {
                         fail(QCoreApplication::translate("EnhancementPipeline", "Output ownership transfer failed"));
                         return;
@@ -647,6 +673,8 @@ struct EnhancementPipeline::Impl
                 lastCompleted = r.frameId;
                 release(s.real, s, r.fenceValue);
                 release(s.generated, s, r.fenceValue);
+                for (auto &extra : s.additionalGenerated)
+                    release(extra, s, r.fenceValue);
                 if ((r.frameId % 60) == 0)
                     qInfo().nospace()
                         << "[RTX][Worker] frame=" << r.frameId << " worker_us=" << r.workerTimeUs
@@ -663,12 +691,14 @@ struct EnhancementPipeline::Impl
                 // per source frame if that would halve the real cadence.
                 const uint64_t realBudgetUs = std::max(sourceIntervalUs, r.workerTimeUs);
                 if (sourceIntervalUs && presentationCostUs && (active & FrameGeneration)) {
-                    if (presentationCostUs * 10 > realBudgetUs * 6)
+                    if (presentationCostUs * (r.generatedCount + 1) * 10 > realBudgetUs * 12)
                         presentationLimited = true;
-                    else if (presentationCostUs * 10 < realBudgetUs * 4)
+                    else if (presentationCostUs * (r.generatedCount + 1) * 10 < realBudgetUs * 8)
                         presentationLimited = false;
                 }
-                generated = bool(active & FrameGeneration) && !presentationLimited;
+                generatedInOutput = (active & FrameGeneration) ? r.generatedCount : 0;
+                generatedIndex = 0;
+                generated = generatedInOutput > 0 && !presentationLimited;
                 generatedFramePresented = false;
                 realFramePresented = false;
                 realTimer.stop();
@@ -677,8 +707,8 @@ struct EnhancementPipeline::Impl
                     const uint64_t interval = lastTimestamp && r.timestampUs > lastTimestamp
                                                   ? r.timestampUs - lastTimestamp
                                                   : 16667;
-                    halfIntervalMs =
-                        int(std::max<uint64_t>(1, std::min<uint64_t>(50, interval / 2000)));
+                    phaseIntervalMs = int(std::max<uint64_t>(1, std::min<uint64_t>(50,
+                        interval / (1000 * (generatedInOutput + 1)))));
                 }
                 lastTimestamp = r.timestampUs;
                 report(QString::fromUtf8(r.message) + (presentationLimited
@@ -737,7 +767,7 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
     // Never restart a worker with an in-flight frame just to change FSR/RCAS.
     const bool sameResources = sameEncoding && i.hdr == hdr && i.vk == vk && i.native.width == native.width &&
         i.native.height == native.height && i.options.neural == options.neural &&
-        i.options.frameGeneration == options.frameGeneration && i.options.bridgeTest == options.bridgeTest &&
+        i.options.frameGeneration == options.frameGeneration && i.options.fgMultiplier == options.fgMultiplier && i.options.bridgeTest == options.bridgeTest &&
         (!options.neural || (i.options.percent == options.percent && i.options.nrPassCount == options.nrPassCount &&
             (options.nrPassCount < 2 || i.options.additionalPasses[0].percent == options.additionalPasses[0].percent) &&
             (options.nrPassCount < 3 || i.options.additionalPasses[1].percent == options.additionalPasses[1].percent)));
@@ -850,7 +880,7 @@ bool EnhancementPipeline::outputFrame(pl_frame &frame)
         return false;
     frame = {};
     frame.num_planes = 1;
-    frame.planes[0].texture = i.generated ? i.resources[i.outputSlot].generated.texture
+    frame.planes[0].texture = i.generated ? i.resources[i.outputSlot].generatedFrame(i.generatedIndex).texture
                                           : i.resources[i.outputSlot].real.texture;
     frame.planes[0].components = 4;
     for (int c = 0; c < 4; ++c)
@@ -881,7 +911,7 @@ void EnhancementPipeline::notePresented(uint64_t presentationWorkUs)
         i.reportCadence();
         // Swapchain acquire/render/submit may already have consumed this phase's gap.
         // Never add that time again after a blocking presentation.
-        i.realTimer.start(std::max(0, i.halfIntervalMs - int(std::min<uint64_t>(1000, presentationWorkUs/1000))));
+        i.realTimer.start(std::max(0, i.phaseIntervalMs - int(std::min<uint64_t>(1000, presentationWorkUs/1000))));
         if (!i.fgPresented)
         {
             i.fgPresented = true;

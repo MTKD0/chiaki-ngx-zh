@@ -444,7 +444,7 @@ ScrollView {
                 C.CheckBox {
                     navigationScope: view.horizontalBar ? view : null
                     Layout.preferredHeight: view.horizontalBar ? 32 : -1
-                    text: qsTr("2× (experimental)")
+                    text: qsTr("Enable")
                     objectName: "fgToggle"
                     KeyNavigation.priority: KeyNavigation.BeforeItem
                     KeyNavigation.down: view.horizontalBar ? null : view.nextFocusItem
@@ -453,6 +453,67 @@ ScrollView {
                     onToggled: Chiaki.settings.enhancementFrameGeneration = checked
                 }
             }
+            GridLayout {
+                columns: view.horizontalBar ? 1 : 2
+                Layout.alignment: Qt.AlignTop
+                rowSpacing: 0
+                Label { Layout.preferredWidth: view.horizontalBar ? -1 : 190; text: qsTr("Frame generation method") }
+                C.ComboBox {
+                    navigationScope: view.horizontalBar ? view : null
+                    objectName: "fgBackend"
+                    Layout.preferredHeight: view.horizontalBar ? 32 : -1
+                    model: ["DLSS FG", "smooth motion"]
+                    enabled: !Chiaki.window.enhancementApplying
+                    currentIndex: Chiaki.settings.enhancementFrameGenerationBackend - 1
+                    onActivated: index => Chiaki.settings.enhancementFrameGenerationBackend = index + 1
+                    ToolTip.visible: hovered || activeFocus
+                    ToolTip.text: Chiaki.settings.enhancementFrameGenerationBackend === 2 ? smoothMotionInstructions.text : qsTr("Turn Smooth Motion off in NVIDIA App before using DLSS FG.")
+                }
+            }
+            GridLayout {
+                columns: view.horizontalBar ? 1 : 2
+                Layout.alignment: Qt.AlignTop
+                rowSpacing: 0
+                Label { Layout.preferredWidth: view.horizontalBar ? -1 : 190; text: qsTr("Frame generation multiplier") }
+                C.ComboBox {
+                    navigationScope: view.horizontalBar ? view : null
+                    objectName: "fgMultiplier"
+                    Layout.preferredHeight: view.horizontalBar ? 32 : -1
+                    model: Chiaki.settings.enhancementFrameGenerationBackend === 2 ? ["2x"] : ["2x", "3x", "4x"]
+                    enabled: !Chiaki.window.enhancementApplying && Chiaki.settings.enhancementFrameGenerationBackend === 1
+                    currentIndex: Chiaki.settings.enhancementFrameGenerationBackend === 2 ? 0 : Chiaki.settings.enhancementFrameGenerationMultiplier - 2
+                    onActivated: index => Chiaki.settings.enhancementFrameGenerationMultiplier = index + 2
+                }
+            }
+        }
+        Label {
+            id: smoothMotionInstructions
+            objectName: "smoothMotionHelp"
+            Layout.fillWidth: true
+            Layout.margins: view.compact ? 4 : 16
+            wrapMode: Text.WordWrap
+            visible: !view.horizontalBar && Chiaki.settings.enhancementFrameGenerationBackend === 2
+            text: qsTr("smooth motion is driver-based 2x frame generation. In NVIDIA App, open Graphics > Program settings, add the main program below and enable Smooth Motion, then restart Chiaki. Selecting this method disables in-app DLSS FG; NVIDIA App activation cannot be verified here. Requires a compatible RTX 40/50 GPU, driver and Vulkan renderer. App FPS does not include driver-generated frames.") + "\n" + Chiaki.settings.applicationExecutable
+        }
+        C.Button {
+            objectName: "copySmoothMotionPath"
+            visible: !view.horizontalBar && Chiaki.settings.enhancementFrameGenerationBackend === 2
+            text: qsTr("Copy main program path")
+            onClicked: Chiaki.settings.copyApplicationPath()
+        }
+        Label {
+            Layout.fillWidth: true
+            Layout.margins: view.compact ? 4 : 16
+            wrapMode: Text.WordWrap
+            visible: !view.horizontalBar && Chiaki.settings.enhancementFrameGenerationBackend === 1
+            text: qsTr("DLSS FG: 2x on supported RTX GPUs; 3x/4x requires a supported RTX 50-series GPU and runtime. Use a display refresh rate at least stream FPS times the multiplier. Turn Smooth Motion off in NVIDIA App before using DLSS FG to avoid stacking frame generation.")
+        }
+        Label {
+            Layout.fillWidth: true
+            Layout.margins: view.compact ? 4 : 16
+            wrapMode: Text.WordWrap
+            visible: !view.horizontalBar && Chiaki.settings.enhancementFrameGenerationBackend === 2
+            text: qsTr("To disable smooth motion, turn it off in NVIDIA App. The in-app checkbox does not change driver settings.")
         }
         Label {
             objectName: "rendererDimensions"

@@ -279,6 +279,7 @@ if(CHIAKI_ENABLE_TESTS)
 	enable_testing()
 	add_subdirectory(test)
     if(CHIAKI_ENABLE_GUI)
+        add_test(NAME fg-settings COMMAND $<TARGET_FILE:fg-settings-test>)
         add_test(NAME localization-catalog
             COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-translations.py")
     endif()

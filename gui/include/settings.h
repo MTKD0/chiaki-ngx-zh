@@ -445,7 +445,13 @@ class Settings : public QObject
             }
             settings.setValue("enhancement/customize_passes", value);
         }
-        bool GetEnhancementFrameGeneration() const { return settings.value("enhancement/frame_generation", false).toBool(); }
+        bool GetEnhancementFrameGenerationEnabled() const { return settings.value("enhancement/frame_generation", false).toBool(); }
+        // 1 = in-app DLSS FG; 2 = externally enabled NVIDIA Smooth Motion.
+        int GetEnhancementFrameGenerationBackend() const { return qBound(1, settings.value("enhancement/fg_backend", 1).toInt(), 2); }
+        void SetEnhancementFrameGenerationBackend(int value) { settings.setValue("enhancement/fg_backend", qBound(1, value, 2)); }
+        int GetEnhancementFrameGenerationMultiplier() const { return GetEnhancementFrameGenerationBackend() == 2 ? 2 : qBound(2, settings.value("enhancement/fg_multiplier", 2).toInt(), 4); }
+        void SetEnhancementFrameGenerationMultiplier(int value) { if(GetEnhancementFrameGenerationBackend() == 1) settings.setValue("enhancement/fg_multiplier", qBound(2, value, 4)); }
+        bool GetEnhancementFrameGeneration() const { return GetEnhancementFrameGenerationEnabled() && GetEnhancementFrameGenerationBackend() == 1; }
         void SetEnhancementFrameGeneration(bool value) { settings.setValue("enhancement/frame_generation", value); }
         int GetEyeCandyExposure() const { return qBound(-100, settings.value("eye_candy/exposure", 0).toInt(), 100); }
         void SetEyeCandyExposure(int value) { settings.setValue("eye_candy/exposure", qBound(-100, value, 100)); }

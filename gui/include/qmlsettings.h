@@ -28,6 +28,9 @@ class QmlSettings : public QObject
     Q_PROPERTY(bool enhancementFsr READ enhancementFsr WRITE setEnhancementFsr NOTIFY enhancementControlsChanged)
     Q_PROPERTY(int enhancementSharpness READ enhancementSharpness WRITE setEnhancementSharpness NOTIFY enhancementControlsChanged)
     Q_PROPERTY(bool enhancementFrameGeneration READ enhancementFrameGeneration WRITE setEnhancementFrameGeneration NOTIFY enhancementChanged)
+    Q_PROPERTY(int enhancementFrameGenerationBackend READ enhancementFrameGenerationBackend WRITE setEnhancementFrameGenerationBackend NOTIFY enhancementChanged)
+    Q_PROPERTY(int enhancementFrameGenerationMultiplier READ enhancementFrameGenerationMultiplier WRITE setEnhancementFrameGenerationMultiplier NOTIFY enhancementChanged)
+    Q_PROPERTY(QString applicationExecutable READ applicationExecutable CONSTANT)
     Q_PROPERTY(bool remotePlayAsk READ remotePlayAsk WRITE setRemotePlayAsk NOTIFY remotePlayAskChanged)
     Q_PROPERTY(bool addSteamShortcutAsk READ addSteamShortcutAsk WRITE setAddSteamShortcutAsk NOTIFY addSteamShortcutAskChanged)
     Q_PROPERTY(bool hideCursor READ hideCursor WRITE setHideCursor NOTIFY hideCursorChanged)
@@ -227,6 +230,12 @@ public:
     void setEnhancementSharpness(int value);
     bool enhancementFrameGeneration() const;
     void setEnhancementFrameGeneration(bool value);
+    int enhancementFrameGenerationBackend() const;
+    void setEnhancementFrameGenerationBackend(int value);
+    int enhancementFrameGenerationMultiplier() const;
+    void setEnhancementFrameGenerationMultiplier(int value);
+    QString applicationExecutable() const;
+    Q_INVOKABLE void copyApplicationPath();
     QmlSettings(Settings *settings, QObject *parent = nullptr);
 
     int resolutionLocalPS4() const;

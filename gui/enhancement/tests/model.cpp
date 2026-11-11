@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 #include "../protocol.h"
+#include "../runtime_route.h"
 #include <cstdio>
 #include <cstdlib>
 using namespace chiaki_enhancement;
@@ -14,6 +15,11 @@ using namespace chiaki_enhancement;
     } while (0)
 int main()
 {
+    CHECK(maxFgMultiplier(L"NVIDIA GeForce RTX 5070 Ti Laptop GPU") == 4);
+    CHECK(maxFgMultiplier(L"NVIDIA GeForce RTX 4090") == 2);
+    CHECK(maxFgMultiplier(L"NVIDIA GeForce RTX 3060") == 2);
+    CHECK(maxFgMultiplier(L"NVIDIA RTX 5000 Ada Generation") == 2);
+    CHECK(maxFgMultiplier(L"Unknown GPU") == 2);
     auto e = nrExtent(2560, 1440, 50);
     CHECK(e.width == 1280 && e.height == 720);
     e = nrExtent(1920, 1080, 65);
@@ -37,6 +43,11 @@ int main()
     c.width = 1920;
     c.height = 1080;
     CHECK(valid(c));
+    c.fgMultiplier = 1; CHECK(!valid(c));
+    c.fgMultiplier = 5; CHECK(!valid(c));
+    c.fgMultiplier = 3; CHECK(valid(c));
+    c.fgMultiplier = 4; CHECK(valid(c));
+    c.fgMultiplier = 2;
     c.percent = 0;
     CHECK(!valid(c));
     c.percent = 65;

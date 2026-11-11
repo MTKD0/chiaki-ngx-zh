@@ -8,8 +8,9 @@
 namespace chiaki_enhancement
 {
 constexpr uint32_t Magic = 0x58474e43; // CNGX, little endian, Windows x64 only
-constexpr uint32_t Version = 6;
+constexpr uint32_t Version = 7;
 constexpr unsigned MaxNrPasses = 3;
+constexpr unsigned MaxGeneratedFrames = 3;
 constexpr unsigned SlotCount = 3;
 enum class Operation : uint32_t
 {
@@ -98,7 +99,7 @@ struct Command
     uint32_t magic = Magic, version = Version, size = sizeof(Command);
     Operation operation = Operation::Configure;
     uint32_t parentPid = 0, width = 0, height = 0, flags = 0;
-    uint32_t percent = 65, sharpness = 20, slot = 0, reserved = 0;
+    uint32_t percent = 65, sharpness = 20, slot = 0, fgMultiplier = 2;
     uint64_t adapterLuid = 0, frameId = 0, timestampUs = 0, revision = 0, fenceValue = 0;
     uint32_t nrPassCount = 1;
     NrTuning nrTuning;
@@ -107,12 +108,14 @@ struct Command
 struct SharedSlot
 {
     uint64_t input = 0, real = 0, generated = 0, fence = 0;
+    uint64_t additionalGenerated[MaxGeneratedFrames - 1] = {};
 };
 struct Reply
 {
     uint32_t magic = Magic, version = Version, size = sizeof(Reply);
     Result result = Result::Error;
     uint32_t slot = 0, activeFlags = 0, width = 0, height = 0;
+    uint32_t generatedCount = 0, reserved = 0;
     uint64_t frameId = 0, timestampUs = 0, revision = 0, fenceValue = 0;
     uint64_t workerTimeUs = 0, flowTimeUs = 0, nrGpuUs = 0, reconstructionGpuUs = 0, fgGpuUs = 0,
              vramBytes = 0;
@@ -140,6 +143,7 @@ inline bool valid(const Command &c)
     return c.magic == Magic && c.version == Version && c.size == sizeof(Command) &&
            c.operation >= Operation::Configure && c.operation <= Operation::Shutdown &&
            c.percent >= 50 && c.percent <= 100 && c.sharpness <= 100 &&
+           c.fgMultiplier >= 2 && c.fgMultiplier <= MaxGeneratedFrames + 1 &&
            c.nrPassCount >= 1 && c.nrPassCount <= MaxNrPasses &&
            validTuning(c.nrTuning) && validPass(c.additionalPasses[0]) && validPass(c.additionalPasses[1]) &&
            !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear)) &&
@@ -148,6 +152,6 @@ inline bool valid(const Command &c)
            (c.operation != Operation::Process || (c.slot < SlotCount && (c.fenceValue & 1)));
 }
 static_assert(sizeof(Command) == 192, "IPC command ABI changed");
-static_assert(sizeof(Reply) == 680, "IPC reply ABI changed");
+static_assert(sizeof(Reply) == 736, "IPC reply ABI changed");
 static_assert(std::is_trivially_copyable<Command>::value, "IPC must be POD");
 } // namespace chiaki_enhancement

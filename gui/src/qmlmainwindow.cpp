@@ -8007,6 +8007,7 @@ void QmlMainWindow::updateEnhancementSettings()
     for (unsigned pass = 1; pass < options.nrPassCount; ++pass)
         options.additionalPasses[pass - 1] = settings->GetEnhancementEffectivePassConfig(int(pass));
     options.frameGeneration = settings->GetEnhancementFrameGeneration();
+    options.fgMultiplier = options.frameGeneration ? unsigned(settings->GetEnhancementFrameGenerationMultiplier()) : 2;
     QMetaObject::invokeMethod(quick_render, [this, options]() {
         enhancement_options = options;
         QMetaObject::invokeMethod(this, [this]() { scheduleUpdate(true); }, Qt::QueuedConnection);

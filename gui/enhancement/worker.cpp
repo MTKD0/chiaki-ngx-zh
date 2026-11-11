@@ -215,6 +215,7 @@ struct Gpu
     ComPtr<IDXGIAdapter3> memoryAdapter;
     UINT64 timestampFrequency = 1;
     bool sm86 = false;
+    unsigned maxFg = 2;
     OwnedHandle event;
     uint64_t tick = 0;
     ComPtr<ID3D12RootSignature> root;
@@ -248,6 +249,7 @@ struct Gpu
         DXGI_ADAPTER_DESC1 description{};
         adapter->GetDesc1(&description);
         sm86 = usesSm86(description.Description);
+        maxFg = maxFgMultiplier(description.Description);
         adapter.As(&memoryAdapter);
         std::fprintf(stderr, "[RTX][Worker] adapter=%ls VRAM=%llu MiB\n", description.Description,
                      description.DedicatedVideoMemory / (1024ull * 1024));
@@ -608,7 +610,7 @@ struct NgxFeature
             "NGX Init_Ext");
         initialized = true;
     }
-    void make(Gpu &gpu, unsigned feature, unsigned w, unsigned h, bool fg)
+    void make(Gpu &gpu, unsigned feature, unsigned w, unsigned h, bool fg, unsigned generatedCount = 1)
     {
         parameters.Set("Width", w);
         parameters.Set("Height", h);
@@ -646,7 +648,7 @@ struct NgxFeature
         parameters.Set("DLSSG.InternalHeight", h);
         parameters.Set("DLSSG.BackbufferFormat", static_cast<unsigned>(DXGI_FORMAT_R8G8B8A8_UNORM));
         parameters.Set("DLSSG.ColorBuffersHDR", 0u);
-        parameters.Set("DLSSG.MultiFrameCount", 1u);
+        parameters.Set("DLSSG.MultiFrameCount", generatedCount);
         gpu.begin();
         ngxCheck(
             create(gpu.list.Get(), static_cast<NVSDK_NGX_Feature>(feature), &parameters, &handle),
@@ -772,6 +774,8 @@ struct OpticalFlow
 struct Slot
 {
     Texture input, real, generated;
+    std::array<Texture, MaxGeneratedFrames - 1> additionalGenerated;
+    Texture &generatedFrame(unsigned n) { return n == 0 ? generated : additionalGenerated[n - 1]; }
     ComPtr<ID3D12Fence> fence;
     uint64_t lastValue = 0;
 };
@@ -803,7 +807,7 @@ struct Worker
     fs::path runtimeDir;
     std::string nrError, fgError;
     bool fgVerified = false, history = false;
-    uint64_t lastFrame = 0;
+    uint64_t lastFrame = 0, fgFrameId = 0;
     ~Worker()
     {
         for (HANDLE handle : exportedHandles)
@@ -851,6 +855,9 @@ struct Worker
             s.input = gpu->texture(c.width, c.height, colorFormat, true);
             s.real = gpu->texture(c.width, c.height, colorFormat, true);
             s.generated = gpu->texture(c.width, c.height, colorFormat, true);
+            if ((c.flags & FrameGeneration) && !hdr)
+                for (unsigned n = 1; n < c.fgMultiplier - 1; ++n)
+                    s.additionalGenerated[n - 1] = gpu->texture(c.width, c.height, colorFormat, true);
             check(gpu->device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&s.fence)),
                   "Create shared fence");
         }
@@ -909,6 +916,8 @@ struct Worker
         {
             try
             {
+                if (c.fgMultiplier > gpu->maxFg)
+                    throw std::runtime_error("DLSS FG 3x/4x requires a supported RTX 50-series GPU and runtime; choose 2x on this adapter");
                 fs::path proxyPath = runtimeDir / L"sm86-proxy" / L"version.dll";
                 std::fprintf(stderr, "[RTX][RuntimeRoute] %s\n", gpu->sm86 ? "SM86 proxy" : "native NVIDIA");
                 if (gpu->sm86)
@@ -927,7 +936,8 @@ struct Worker
                 }
                 fg.reset(new NgxFeature);
                 fg->load(*gpu, runtimeDir / L"nvngx_dlssg.dll");
-                fg->make(*gpu, 11, c.width, c.height, true);
+                fg->make(*gpu, 11, c.width, c.height, true, c.fgMultiplier - 1);
+                std::fprintf(stderr, "[RTX][FG] requested=%ux generated_frames=%u\n", c.fgMultiplier, c.fgMultiplier - 1);
             }
             catch (const std::exception &e)
             {
@@ -965,7 +975,10 @@ struct Worker
             reply.resources[i] = {
                 exportHandle(s.input.resource.Get()), exportHandle(s.real.resource.Get()),
                 exportHandle(s.generated.resource.Get()), exportHandle(s.fence.Get())};
+            for (unsigned n = 1; (c.flags & FrameGeneration) && !hdr && n < c.fgMultiplier - 1; ++n)
+                reply.resources[i].additionalGenerated[n - 1] = exportHandle(s.generatedFrame(n).resource.Get());
         }
+        reply.generatedCount = fg ? c.fgMultiplier - 1 : 0;
         reply.activeFlags = (hasNr() ? Neural : 0) | (fg ? FrameGeneration : 0) | (c.flags & BridgeTest);
         std::string message = "GPU bridge ready";
         if (!nrError.empty())
@@ -1009,7 +1022,7 @@ struct Worker
     Reply process(const Command &c)
     {
         if (c.width != config.width || c.height != config.height || c.revision != config.revision ||
-            (c.flags & ~(Reset | Fsr)) != (config.flags & ~(Reset | Fsr)) || !sameNrResources(c, config))
+            (c.flags & ~(Reset | Fsr)) != (config.flags & ~(Reset | Fsr)) || !sameNrResources(c, config) || c.fgMultiplier != config.fgMultiplier)
             throw std::runtime_error("Stale frame/configuration revision");
         if (c.frameId <= lastFrame)
             throw std::runtime_error("Frame already processed or out of order");
@@ -1187,7 +1200,8 @@ struct Worker
             gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            gpu->transition(s.generated, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
+                gpu->transition(s.generatedFrame(n), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             gpu->transition(fgReal, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             fg->resource("DLSSG.Backbuffer", *processed);
             fg->resource("DLSSG.HUDLess", *processed);
@@ -1200,9 +1214,9 @@ struct Worker
             p.Set("DLSSG.MvecScaleX", 1.0f);
             p.Set("DLSSG.MvecScaleY", 1.0f);
             p.Set("DLSSG.DepthInverted", 1u);
-            p.Set("DLSSG.MultiFrameCount", 1u);
+            p.Set("DLSSG.MultiFrameCount", c.fgMultiplier - 1);
             p.Set("DLSSG.MultiFrameIndex", 1u);
-            p.Set("DLSSG.BackbufferFrameID", static_cast<unsigned long long>(c.frameId));
+            p.Set("DLSSG.BackbufferFrameID", static_cast<unsigned long long>(++fgFrameId));
             p.Set("DLSSG.CameraMotionIncluded", 1u);
             p.Set("DLSSG.CameraNear", 0.1f);
             p.Set("DLSSG.CameraFar", 1000.0f);
@@ -1241,7 +1255,13 @@ struct Worker
             if (!history)
                 std::fprintf(stderr, "[RTX][FG] first EvaluateFeature begin\n");
             gpu->mark(MaxNrPasses * 4);
-            fg->eval(*gpu);
+            // DLSS 4 semantics used by chiaki-ng-enhanced's DlssBackend:
+            // one real pair, separate outputs, one-based inner frame indices.
+            for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
+                fg->resource("DLSSG.OutputInterpolated", s.generatedFrame(n));
+                p.Set("DLSSG.MultiFrameIndex", n + 1);
+                fg->eval(*gpu);
+            }
             gpu->mark(MaxNrPasses * 4 + 1);
             if (!history)
                 std::fprintf(stderr, "[RTX][FG] EvaluateFeature returned\n");
@@ -1249,6 +1269,8 @@ struct Worker
         gpu->transition(s.input, D3D12_RESOURCE_STATE_COMMON);
         gpu->transition(s.real, D3D12_RESOURCE_STATE_COMMON);
         gpu->transition(s.generated, D3D12_RESOURCE_STATE_COMMON);
+        for (auto &frame : s.additionalGenerated)
+            if (frame.resource) gpu->transition(frame, D3D12_RESOURCE_STATE_COMMON);
         gpu->resolveTimers();
         gpu->submit();
         auto stageTimes = gpu->timings();
@@ -1259,27 +1281,40 @@ struct Worker
             auto real = gpu->pixels(s.real);
             if (!reset && previousRealPixels.size() == real.size() && proxyRouteConfirmed())
             {
-                auto generated = gpu->pixels(s.generated);
-                size_t differentCurrent = 0, differentPrevious = 0, nonBlack = 0, samples = 0;
-                for (size_t n = 0; n < real.size(); n += 64)
-                {
-                    ++samples;
-                    unsigned dc = 0, dp = 0, brightness = 0;
-                    for (size_t k = 0; k < 3; ++k)
+                bool allOutputsValid = true;
+                std::vector<std::vector<uint8_t>> phases;
+                for (unsigned phase = 0; phase < c.fgMultiplier - 1; ++phase) {
+                    auto generated = gpu->pixels(s.generatedFrame(phase));
+                    size_t differentCurrent = 0, differentPrevious = 0, nonBlack = 0, samples = 0;
+                    for (size_t n = 0; n < real.size(); n += 64)
                     {
-                        dc += std::abs(int(real[n + k]) - int(generated[n + k]));
-                        dp += std::abs(int(previousRealPixels[n + k]) - int(generated[n + k]));
-                        brightness += generated[n + k];
+                        ++samples;
+                        unsigned dc = 0, dp = 0, brightness = 0;
+                        for (size_t k = 0; k < 3; ++k)
+                        {
+                            dc += std::abs(int(real[n + k]) - int(generated[n + k]));
+                            dp += std::abs(int(previousRealPixels[n + k]) - int(generated[n + k]));
+                            brightness += generated[n + k];
+                        }
+                        if (dc > 6)
+                            ++differentCurrent;
+                        if (dp > 6)
+                            ++differentPrevious;
+                        if (brightness > 12)
+                            ++nonBlack;
                     }
-                    if (dc > 6)
-                        ++differentCurrent;
-                    if (dp > 6)
-                        ++differentPrevious;
-                    if (brightness > 12)
-                        ++nonBlack;
+                    bool distinct = true;
+                    for (const auto &earlier : phases) {
+                        size_t differences = 0;
+                        for (size_t n = 0; n < generated.size(); n += 64)
+                            if (std::abs(int(generated[n]) - int(earlier[n])) > 2) ++differences;
+                        distinct &= differences > samples / 1000;
+                    }
+                    allOutputsValid &= differentCurrent > samples / 1000 &&
+                        differentPrevious > samples / 1000 && nonBlack > samples / 100 && distinct;
+                    phases.push_back(std::move(generated));
                 }
-                fgVerified = differentCurrent > samples / 1000 &&
-                             differentPrevious > samples / 1000 && nonBlack > samples / 100;
+                fgVerified = allOutputsValid;
                 if (fgVerified)
                     std::fprintf(stderr, "[RTX][FG] output differs from both real frames; nonblank; "
                                          "proxy route confirmed; awaiting presentation\n");
@@ -1287,6 +1322,8 @@ struct Worker
             previousRealPixels = std::move(real);
             gpu->begin();
             gpu->transition(s.generated, D3D12_RESOURCE_STATE_COMMON);
+            for (auto &frame : s.additionalGenerated)
+                if (frame.resource) gpu->transition(frame, D3D12_RESOURCE_STATE_COMMON);
             gpu->transition(s.real, D3D12_RESOURCE_STATE_COMMON);
             gpu->submit();
         }
@@ -1307,6 +1344,7 @@ struct Worker
         r.revision = c.revision;
         r.fenceValue = c.fenceValue + 1;
         r.activeFlags = active;
+        r.generatedCount = (active & FrameGeneration) ? c.fgMultiplier - 1 : 0;
         r.width = nrExtent(c.width, c.height, c.percent).width;
         r.height = nrExtent(c.width, c.height, c.percent).height;
         r.flowTimeUs = static_cast<uint64_t>((flowEnd.QuadPart - flowBegin.QuadPart) * 1000000 /
