@@ -113,6 +113,8 @@ done
 shopt -u nullglob
 
 windeployqt6.exe --release --no-translations --qmldir="$qml_dir" "$output_dir/$(basename "$exe_path")"
+mkdir -p "$output_dir/translations"
+cp "$msys_prefix/share/qt6/translations/qtbase_zh_CN.qm" "$output_dir/translations/"
 # windeployqt only selects qwindows by default; packaged headless verification needs offscreen.
 mkdir -p "$output_dir/platforms"
 cp "$msys_prefix/share/qt6/plugins/platforms/qoffscreen.dll" "$output_dir/platforms/"
@@ -123,6 +125,7 @@ Plugins=.
 QmlImports=qml
 Qml2Imports=qml
 LibraryExecutables=.
+Translations=translations
 CONF
 while IFS= read -r -d '' plugin; do queue+=("$plugin"); done < <(find "$output_dir" -type f \( -iname '*.dll' -o -iname '*.exe' \) -print0)
 resolve_queue

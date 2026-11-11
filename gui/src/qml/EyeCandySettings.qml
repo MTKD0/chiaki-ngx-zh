@@ -139,7 +139,7 @@ ScrollView {
                     flat: true
                     focusPolicy: Qt.StrongFocus
                     objectName: "resetEyeCandyBrightness"
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0
@@ -173,7 +173,7 @@ ScrollView {
                     flat: true
                     focusPolicy: Qt.StrongFocus
                     objectName: "resetEyeCandyContrast"
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0
@@ -207,7 +207,7 @@ ScrollView {
                     flat: true
                     focusPolicy: Qt.StrongFocus
                     objectName: "resetEyeCandySaturation"
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0
@@ -241,7 +241,7 @@ ScrollView {
                     flat: true
                     focusPolicy: Qt.StrongFocus
                     objectName: "resetEyeCandyGamma"
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0
@@ -279,7 +279,7 @@ ScrollView {
                     objectName: "resetEyeCandyExposure"
                     flat: true
                     focusPolicy: Qt.StrongFocus
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0
@@ -320,7 +320,7 @@ ScrollView {
                     KeyNavigation.tab: view.nextFocusItem
                     flat: true
                     focusPolicy: Qt.StrongFocus
-                    text: "\u21ba"
+                    text: qsTr("\u21ba")
                     font.pixelSize: view.horizontalBar ? 17 : 24
                     leftPadding: 0
                     rightPadding: 0

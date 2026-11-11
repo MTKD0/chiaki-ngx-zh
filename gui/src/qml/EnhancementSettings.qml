@@ -72,7 +72,7 @@ ScrollView {
     component ResetButton: C.Button {
         navigationScope: view.horizontalBar ? view : null
         property string resetLabel
-        text: "\u21ba"
+        text: qsTr("\u21ba")
         flat: true
         focusPolicy: Qt.StrongFocus
         font.pixelSize: view.horizontalBar ? 17 : 24

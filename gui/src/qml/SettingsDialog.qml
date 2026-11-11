@@ -465,6 +465,18 @@ DialogView {
 
                             Label {
                                 Layout.alignment: Qt.AlignRight
+                                text: qsTr("Interface language:")
+                            }
+                            C.ComboBox {
+                                Layout.preferredWidth: 400
+                                model: ["简体中文", "English"]
+                                currentIndex: Chiaki.settings.language === "en" ? 1 : 0
+                                onActivated: index => Chiaki.settings.language = index === 1 ? "en" : "zh_CN"
+                            }
+                            Label { text: qsTr("Restart to apply") }
+
+                            Label {
+                                Layout.alignment: Qt.AlignRight
                                 text: qsTr("Action On Disconnect:")
                             }
 
@@ -2235,7 +2247,7 @@ DialogView {
 
                         Button {
                             id: resetAllKeys
-                            text: "Reset All Keys"
+                            text: qsTr("Reset All Keys")
                             Layout.alignment: Qt.AlignRight
                             property bool firstInFocusChain: true
                             property bool lastInFocusChain: false
@@ -2585,7 +2597,7 @@ DialogView {
                             Layout.alignment: Qt.AlignHCenter
                             id: controllerMappingChange
                             firstInFocusChain: true
-                            text: "Change Controller Mapping"
+                            text: qsTr("Change Controller Mapping")
                             onClicked: controllerMappingDialog.show({
                                 reset: false
                             });
@@ -2593,7 +2605,7 @@ DialogView {
                         C.Button {
                             Layout.alignment: Qt.AlignHCenter
                             id: controllerMappingReset
-                            text: "Reset Controller Mapping"
+                            text: qsTr("Reset Controller Mapping")
                             onClicked: controllerMappingDialog.show({
                                 reset: true
                             });
@@ -3171,7 +3183,7 @@ DialogView {
                     Layout.preferredWidth: 400
                     verticalAlignment: Text.AlignTop
                     wrapMode: Text.Wrap
-                    text: "<h1>chiaki-ngx</h1> version %1
+                    text: qsTr("<h1>chiaki-ngx</h1> version %1
                         <h2>Fork of chiaki-ng</h2> by Street Pea
                         <h2>Fork of Chiaki</h2> by Florian Markl at version 2.1.1
 
@@ -3182,7 +3194,7 @@ DialogView {
                         <p>This program is distributed in the hope that it will be useful,
                         but WITHOUT ANY WARRANTY; without even the implied warranty of
                         MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-                        GNU General Public License for more details.</p>".arg(Qt.application.version)
+                        GNU General Public License for more details.</p>").arg(Qt.application.version)
                 }
             }
         }

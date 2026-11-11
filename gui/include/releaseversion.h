@@ -9,8 +9,8 @@
 #include <algorithm>
 
 namespace NgxRelease {
-constexpr const char *Repository = "https://github.com/TheHiepDang/chiaki-ngx";
-constexpr const char *Api = "https://api.github.com/repos/TheHiepDang/chiaki-ngx/releases";
+constexpr const char *Repository = "https://github.com/MTKD0/chiaki-ngx-zh";
+constexpr const char *Api = "https://api.github.com/repos/MTKD0/chiaki-ngx-zh/releases";
 struct Version {
     std::array<int,3> numbers{{0,0,0}};
     QString prerelease, text;

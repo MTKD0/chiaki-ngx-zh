@@ -7,6 +7,7 @@
 class QmlSettings : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QString language READ language WRITE setLanguage NOTIFY languageChanged)
     Q_PROPERTY(int eyeCandyExposure READ eyeCandyExposure WRITE setEyeCandyExposure NOTIFY eyeCandyChanged)
     Q_PROPERTY(int eyeCandyDarkArea READ eyeCandyDarkArea WRITE setEyeCandyDarkArea NOTIFY eyeCandyChanged)
     Q_PROPERTY(QString rendererShortcut READ rendererShortcut NOTIFY rendererShortcutChanged)
@@ -185,6 +186,12 @@ class QmlSettings : public QObject
     Q_PROPERTY(float placeboToneMappingContrastSmoothness READ placeboToneMappingContrastSmoothness WRITE setPlaceboToneMappingContrastSmoothness NOTIFY placeboToneMappingContrastSmoothnessChanged)
 
 public:
+    QString language() const { return QSettings().value("ui/language", "zh_CN").toString(); }
+    void setLanguage(const QString &value) {
+        if ((value != "zh_CN" && value != "en") || value == language()) return;
+        QSettings().setValue("ui/language", value);
+        emit languageChanged();
+    }
     bool enhancementCustomizePasses() const;
     void setEnhancementCustomizePasses(bool value);
     int enhancementNrPreset() const;
@@ -675,6 +682,7 @@ public:
     Q_INVOKABLE QString stringForStreamMenuShortcut() const;
 
 signals:
+    void languageChanged();
     void enhancementChanged();
     void enhancementControlsChanged();
     void enhancementPassSelectionChanged();

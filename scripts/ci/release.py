@@ -16,7 +16,7 @@ import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
-REPO = 'TheHiepDang/chiaki-ngx'
+REPO = 'MTKD0/chiaki-ngx-zh'
 LOCK = Path(__file__).with_name('dependencies.json')
 PLATFORMS = {
     'windows': ('chiaki-ngx-windows-x64-{tag}.zip', 'chiaki-ngx-windows-x64-{tag}-installer.exe'),

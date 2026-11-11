@@ -66,7 +66,7 @@ struct EnhancementPipeline::Impl
         if (ms < 1000) return;
         const double realFps = (realCount - previousRealCount) * 1000.0 / ms;
         const double generatedFps = (generatedCount - previousGeneratedCount) * 1000.0 / ms;
-        emit q->cadenceChanged(QStringLiteral("Submitted: %1 real + %2 generated = %3 fps\nTotals: %4 real · %5 generated")
+        emit q->cadenceChanged(QCoreApplication::translate("EnhancementPipeline", "Submitted: %1 real + %2 generated = %3 fps\nTotals: %4 real · %5 generated")
             .arg(realFps, 0, 'f', 1).arg(generatedFps, 0, 'f', 1).arg(realFps + generatedFps, 0, 'f', 1)
             .arg(realCount).arg(generatedCount));
         qInfo().nospace() << "[RTX][Present] real=" << realCount << " generated=" << generatedCount
@@ -122,7 +122,7 @@ struct EnhancementPipeline::Impl
         QObject::connect(&resizeTimer, &QTimer::timeout, q, [this] { start(); });
         QObject::connect(
             &watchdog, &QTimer::timeout, q, [this]
-            { fail(QStringLiteral("Enhancement worker timed out; ordinary playback restored")); });
+            { fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker timed out; ordinary playback restored")); });
         QObject::connect(&realTimer, &QTimer::timeout, q,
                          [this]
                          {
@@ -144,7 +144,7 @@ struct EnhancementPipeline::Impl
                          [this](QProcess::ProcessError e)
                          {
                              if (e != QProcess::Crashed || !failed)
-                                 fail(QStringLiteral("Enhancement worker: ") +
+                                 fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker: ") +
                                       process.errorString());
                          });
         QObject::connect(
@@ -154,7 +154,7 @@ struct EnhancementPipeline::Impl
                 readWorkerErrors(true);
                 qInfo() << "[RTX][Worker] exit_code=" << exitCode << "exit_status=" << int(exitStatus);
                 if (!failed && ready)
-                    fail(QStringLiteral("Enhancement worker exited; ordinary playback restored"));
+                    fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker exited; ordinary playback restored"));
             });
     }
     void report(const QString &message)
@@ -172,7 +172,7 @@ struct EnhancementPipeline::Impl
     void send(const Command &c)
     {
         if (process.write(reinterpret_cast<const char *>(&c), sizeof c) != sizeof c)
-            fail(QStringLiteral("Enhancement IPC write failed"));
+            fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement IPC write failed"));
     }
     void stop(bool preserveApplying = false)
     {
@@ -211,7 +211,7 @@ struct EnhancementPipeline::Impl
         readWorkerErrors(true);
         received.clear();
         pending = {};
-        emit q->cadenceChanged(QStringLiteral("No enhanced frames presented"));
+        emit q->cadenceChanged(QCoreApplication::translate("EnhancementPipeline", "No enhanced frames presented"));
 #ifdef Q_OS_WIN
         if (vk && destroySemaphore)
         {
@@ -481,11 +481,11 @@ struct EnhancementPipeline::Impl
         if (!vk || !requested() || failed)
             return;
 #ifndef Q_OS_WIN
-        fail(QStringLiteral("Enhancements require Windows x64"));
+        fail(QCoreApplication::translate("EnhancementPipeline", "Enhancements require Windows x64"));
 #else
         if (!functions())
         {
-            fail(QStringLiteral("Required Vulkan/D3D12 sharing functions unavailable"));
+            fail(QCoreApplication::translate("EnhancementPipeline", "Required Vulkan/D3D12 sharing functions unavailable"));
             return;
         }
         VkPhysicalDeviceIDProperties id{};
@@ -496,13 +496,13 @@ struct EnhancementPipeline::Impl
         properties(vk->phys_device, &p);
         if ((options.neural || options.frameGeneration) &&
             !isRtxAdapter(p.properties.vendorID, QString::fromUtf8(p.properties.deviceName).toStdWString())) {
-            fail(QStringLiteral("RTX enhancements require an NVIDIA RTX GPU; active adapter: %1")
+            fail(QCoreApplication::translate("EnhancementPipeline", "RTX enhancements require an NVIDIA RTX GPU; active adapter: %1")
                 .arg(QString::fromUtf8(p.properties.deviceName)), options.neural);
             return;
         }
         if (!id.deviceLUIDValid)
         {
-            fail(QStringLiteral("Vulkan adapter has no Windows LUID"));
+            fail(QCoreApplication::translate("EnhancementPipeline", "Vulkan adapter has no Windows LUID"));
             return;
         }
         QString executable = qEnvironmentVariable("CHIAKI_ENHANCEMENT_WORKER");
@@ -511,7 +511,7 @@ struct EnhancementPipeline::Impl
                 QCoreApplication::applicationDirPath() + QStringLiteral("/enhancement/nvngx.dll");
         if (!QFileInfo::exists(executable))
         {
-            fail(QStringLiteral("Enhancement worker is not installed (enhancement/nvngx.dll)"));
+            fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker is not installed (enhancement/nvngx.dll)"));
             return;
         }
         QString runtime = qEnvironmentVariable("CHIAKI_ENHANCEMENT_RUNTIME_DIR");
@@ -566,7 +566,7 @@ struct EnhancementPipeline::Impl
         process.setArguments({QStringLiteral("--runtime-dir"), runtime});
         process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments *a)
                                                   { a->flags |= CREATE_NO_WINDOW; });
-        report(QStringLiteral("Starting enhancement worker…"));
+        report(QCoreApplication::translate("EnhancementPipeline", "Starting enhancement worker…"));
         process.start();
         watchdog.start();
 #endif
@@ -583,7 +583,7 @@ struct EnhancementPipeline::Impl
             received.remove(0, sizeof r);
             if (r.magic != Magic || r.version != Version || r.size != sizeof r)
             {
-                fail(QStringLiteral("Incompatible enhancement worker protocol"));
+                fail(QCoreApplication::translate("EnhancementPipeline", "Incompatible enhancement worker protocol"));
                 return;
             }
             r.message[sizeof(r.message) - 1] = 0;
@@ -596,7 +596,7 @@ struct EnhancementPipeline::Impl
             }
             if (r.revision != config.revision)
             {
-                fail(QStringLiteral("Enhancement worker returned a stale configuration"));
+                fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker returned a stale configuration"));
                 return;
             }
             watchdog.stop();
@@ -605,7 +605,7 @@ struct EnhancementPipeline::Impl
             {
                 if (!importSlots(r))
                 {
-                    fail(QStringLiteral("Vulkan could not import D3D12 shared resources"));
+                    fail(QCoreApplication::translate("EnhancementPipeline", "Vulkan could not import D3D12 shared resources"));
                     return;
                 }
                 capabilities = r.activeFlags;
@@ -626,7 +626,7 @@ struct EnhancementPipeline::Impl
                     r.fenceValue != pending.fenceValue + 1)
                 {
                     if (r.frameId <= lastCompleted) continue; // Idempotent consumption of an old completion.
-                    fail(QStringLiteral("Enhancement protocol error: expected frame %1 slot %2 fence %3, received frame %4 slot %5 fence %6; ordinary playback restored, controls remain available")
+                    fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement protocol error: expected frame %1 slot %2 fence %3, received frame %4 slot %5 fence %6; ordinary playback restored, controls remain available")
                         .arg(pending.frameId).arg(pending.slot).arg(pending.fenceValue+1)
                         .arg(r.frameId).arg(r.slot).arg(r.fenceValue));
                     return;
@@ -639,7 +639,7 @@ struct EnhancementPipeline::Impl
                     // Complete all reads before this slot can become a producer.
                     if (!holdLocal(old.real) || !holdLocal(old.generated))
                     {
-                        fail(QStringLiteral("Output ownership transfer failed"));
+                        fail(QCoreApplication::translate("EnhancementPipeline", "Output ownership transfer failed"));
                         return;
                     }
                 }
@@ -682,12 +682,12 @@ struct EnhancementPipeline::Impl
                 }
                 lastTimestamp = r.timestampUs;
                 report(QString::fromUtf8(r.message) + (presentationLimited
-                    ? QStringLiteral("; FG presentation skipped to preserve real FPS") : QString()));
+                    ? QCoreApplication::translate("EnhancementPipeline", "; FG presentation skipped to preserve real FPS") : QString()));
                 emit q->frameAvailable();
             }
             else
             {
-                fail(QStringLiteral("Unknown worker response"));
+                fail(QCoreApplication::translate("EnhancementPipeline", "Unknown worker response"));
                 return;
             }
 #endif
@@ -706,7 +706,7 @@ void EnhancementPipeline::reset()
     impl->failed = false;
     impl->native = {};
     impl->work = {};
-    impl->report(QStringLiteral("Off"));
+    impl->report(QCoreApplication::translate("EnhancementPipeline", "Off"));
 }
 void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const EnhancementOptions &options,
                                   bool hdr)
@@ -762,19 +762,19 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
     }
     if (!i.requested())
     {
-        i.report(QStringLiteral("Off"));
+        i.report(QCoreApplication::translate("EnhancementPipeline", "Off"));
         return;
     }
     if (hdr && !options.neural && !options.bridgeTest)
     {
         i.setApplying(false);
-        i.report(QStringLiteral("HDR frame generation is not enabled; ordinary HDR playback retained"));
+        i.report(QCoreApplication::translate("EnhancementPipeline", "HDR frame generation is not enabled; ordinary HDR playback retained"));
         return;
     }
     if (!vk)
     {
         if (!i.failed)
-            i.fail(QStringLiteral("Enhancements require the Vulkan renderer"));
+            i.fail(QCoreApplication::translate("EnhancementPipeline", "Enhancements require the Vulkan renderer"));
         return;
     }
     if (!native.width || !native.height) {
@@ -782,7 +782,7 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
         return;
     }
     i.setApplying(true);
-    i.report(QStringLiteral("Waiting for video size to settle…"));
+    i.report(QCoreApplication::translate("EnhancementPipeline", "Waiting for video size to settle…"));
     i.resizeTimer.start();
 }
 pl_tex EnhancementPipeline::beginFrame(uint64_t frameId, uint64_t timestampUs)
@@ -797,7 +797,7 @@ pl_tex EnhancementPipeline::beginFrame(uint64_t frameId, uint64_t timestampUs)
             auto &s = i.resources[n];
             if (!s.input.held && !i.holdLocal(s.input))
             {
-                i.fail(QStringLiteral("Input ownership transfer failed"));
+                i.fail(QCoreApplication::translate("EnhancementPipeline", "Input ownership transfer failed"));
                 return nullptr;
             }
             i.release(s.input, s, s.value);
@@ -828,7 +828,7 @@ bool EnhancementPipeline::submitFrame()
     auto &s = i.resources[i.submitSlot];
     if (!i.hold(s.input, s, i.pending.fenceValue))
     {
-        i.fail(QStringLiteral("Cannot hand frame to enhancement worker"));
+        i.fail(QCoreApplication::translate("EnhancementPipeline", "Cannot hand frame to enhancement worker"));
         return false;
     }
     pl_gpu_flush(i.vk->gpu);
@@ -885,7 +885,7 @@ void EnhancementPipeline::notePresented(uint64_t presentationWorkUs)
         if (!i.fgPresented)
         {
             i.fgPresented = true;
-            i.report(i.status + QStringLiteral("; generated frame presented"));
+            i.report(i.status + QCoreApplication::translate("EnhancementPipeline", "; generated frame presented"));
         }
     }
     else if (!i.generated && i.outputSlot >= 0 && !i.realFramePresented) {

@@ -83,6 +83,8 @@ $readme = $readme.Replace('gui/res/chiaking-logo.svg', 'README-logo.svg').Replac
     '](docs/diy/runtime-packaging.md)', '](https://github.com/TheHiepDang/chiaki-ngx/blob/main/docs/diy/runtime-packaging.md)')
 $readme = $readme.Replace('](docs/diy/enhancements.md#bug-reports)',
     '](https://github.com/TheHiepDang/chiaki-ngx/blob/main/docs/diy/enhancements.md#bug-reports)')
+$readme = $readme.Replace('](docs/diy/windows-zh.md)',
+    '](https://github.com/MTKD0/chiaki-ngx-zh/blob/main/docs/diy/windows-zh.md)')
 [IO.File]::WriteAllText((Join-Path $destinationRoot 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $repoRoot 'gui/res/chiaking-logo.svg') -Destination (Join-Path $destinationRoot 'README-logo.svg') -Force
 # Keep source identity fields used by application diagnostics, without carrying

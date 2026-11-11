@@ -8,6 +8,7 @@ if(APPLE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Concurrent Svg Qml Quick Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS LinguistTools)
 if(Qt6_VERSION VERSION_GREATER_EQUAL "6.10.0")
 	find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 endif()
@@ -101,6 +102,16 @@ add_executable(chiaki WIN32
 		${SOURCE_FILES}
 )
 target_include_directories(chiaki PRIVATE include)
+option(CHIAKI_MANUAL_UPDATES "Use browser downloads for private development releases" ON)
+if(CHIAKI_MANUAL_UPDATES)
+    target_compile_definitions(chiaki PRIVATE CHIAKI_MANUAL_UPDATES)
+endif()
+
+# Embed the catalog so portable builds do not depend on external translation paths.
+qt_add_translations(chiaki
+    TS_FILES translations/chiaki_zh_CN.ts
+    RESOURCE_PREFIX "/i18n"
+    LUPDATE_SOURCE_PATHS src include enhancement/pipeline.cpp enhancement/runtime_manifest.h)
 
 add_library(placebo-libav-impl src/libav_impl.c)
 target_link_libraries(placebo-libav-impl PkgConfig::LIBPLACEBO FFMPEG::avcodec FFMPEG::avutil FFMPEG::avformat)

@@ -46,6 +46,8 @@ int main(int argc, char *argv[]) { return real_main(argc, argv); }
 #include <QSurfaceFormat>
 #include <QDir>
 #include <QTimer>
+#include <QTranslator>
+#include <QLibraryInfo>
 
 Q_DECLARE_METATYPE(ChiakiLogLevel)
 Q_DECLARE_METATYPE(ChiakiRegistEventType)
@@ -115,6 +117,29 @@ int real_main(int argc, char *argv[])
 	QtWebEngineQuick::initialize();
 #endif
 	QApplication app(argc, argv);
+    const QString isolatedSettings = qEnvironmentVariable("CHIAKI_SETTINGS_DIR");
+    if (!isolatedSettings.isEmpty() && QDir::isAbsolutePath(isolatedSettings)) {
+        QSettings::setDefaultFormat(QSettings::IniFormat);
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, isolatedSettings);
+    }
+    // Keep language app-wide, independently of the selected console profile.
+    QString uiLanguage = QSettings().value("ui/language", "zh_CN").toString();
+    const QStringList startupArguments = app.arguments();
+    for (int i = 1; i < startupArguments.size(); ++i) {
+        if (startupArguments[i].startsWith("--language="))
+            uiLanguage = startupArguments[i].mid(11);
+        else if (startupArguments[i] == "--language" && i + 1 < startupArguments.size())
+            uiLanguage = startupArguments[++i];
+    }
+    QTranslator appTranslator, qtTranslator;
+    if (uiLanguage == "zh_CN") {
+        if (appTranslator.load(":/i18n/chiaki_zh_CN.qm"))
+            app.installTranslator(&appTranslator);
+        else
+            qWarning() << "[App][Language] Embedded Chinese catalog is missing";
+        if (qtTranslator.load("qtbase_zh_CN", QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
+            app.installTranslator(&qtTranslator);
+    }
     QString diagnosticDirectory;
     if (qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC"))
         diagnosticDirectory = qEnvironmentVariable("CHIAKI_RENDER_DIAGNOSTIC_ROOT") + "/logs";
@@ -147,6 +172,7 @@ int real_main(int argc, char *argv[])
 	parser.setOptionsAfterPositionalArgumentsMode(QCommandLineParser::ParseAsPositionalArguments);
 	parser.addHelpOption();
 	parser.addVersionOption();
+    parser.addOption(QCommandLineOption("language", "Interface language: zh_CN or en.", "language"));
 	const QCommandLineOption package_smoke_option("package-smoke-test", "Check packaged Qt/QML without connecting to a console.");
 	parser.addOption(package_smoke_option);
 	
@@ -192,6 +218,12 @@ int real_main(int argc, char *argv[])
 	parser.process(app);
 	QStringList args = parser.positionalArguments();
     if (parser.isSet(package_smoke_option)) {
+        const QString translatedSettings = QCoreApplication::translate("SettingsDialog", "Settings");
+        const QString expectedSettings = uiLanguage == "zh_CN" ? QString::fromUtf8("设置") : QStringLiteral("Settings");
+        if (translatedSettings != expectedSettings) {
+            qCritical() << "[App][Language] Packaged catalog check failed; language=" << uiLanguage;
+            return 1;
+        }
         QQmlEngine engine;
         QQmlComponent component(&engine);
         component.setData("import QtQuick\nimport QtQuick.Controls\nimport QtQuick.Layouts\nItem { Button {} RowLayout {} }", QUrl());

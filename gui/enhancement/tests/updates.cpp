@@ -117,7 +117,7 @@ int main(int argc,char **argv) {
     const auto modernList=body(QJsonArray{release("0.3.0-rc.1",true),release("0.2.0")});
     modernNetwork.responses.append({modernList});modernChecker.checkForUpdates();CHECK(until([&]{return !modernChecker.busy();}));
     CHECK(modernChecker.availableVersion()=="0.2.0");
-    CHECK(modernNetwork.requests[0].path()=="/repos/TheHiepDang/chiaki-ngx/releases");
+    CHECK(modernNetwork.requests[0].path()=="/repos/MTKD0/chiaki-ngx-zh/releases");
     modernNetwork.responses.append({modernList});modernChecker.setChannel("prerelease");CHECK(until([&]{return !modernChecker.busy();}));
     CHECK(modernChecker.availableVersion()=="0.3.0-rc.1");
     // The fixture overrides capability, not validation; verify real platform policy separately.
