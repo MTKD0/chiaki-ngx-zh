@@ -60,7 +60,7 @@ struct EnhancementPipeline::Impl
     bool ready = false, inFlight = false, failed = false, generated = false, fgPresented = false;
     bool generatedFramePresented = false, realFramePresented = true;
     uint64_t realCount = 0, generatedCount = 0, previousRealCount = 0, previousGeneratedCount = 0;
-    QElapsedTimer cadenceClock, debugClock;
+    QElapsedTimer cadenceClock, debugClock, timingClock;
     void reportCadence() {
         const qint64 ms = cadenceClock.elapsed();
         if (ms < 1000) return;
@@ -79,7 +79,7 @@ struct EnhancementPipeline::Impl
     uint64_t sourceIntervalUs = 0, presentationCostUs = 0;
     bool presentationLimited = false;
     uint32_t capabilities = 0, active = 0;
-    QString status;
+    QString status, vsrFailure;
 #ifdef Q_OS_WIN
     struct Image
     {
@@ -115,6 +115,7 @@ struct EnhancementPipeline::Impl
     explicit Impl(EnhancementPipeline *owner) : q(owner)
     {
         cadenceClock.start();
+        timingClock.start();
         debugClock.start();
         resizeTimer.setSingleShot(true);
         resizeTimer.setInterval(180);
@@ -165,8 +166,9 @@ struct EnhancementPipeline::Impl
                     fail(QCoreApplication::translate("EnhancementPipeline", "Enhancement worker exited; ordinary playback restored"));
             });
     }
-    void report(const QString &message)
+    void report(QString message)
     {
+        if (!vsrFailure.isEmpty() && !message.contains(vsrFailure)) message += QStringLiteral("; VSR: ") + vsrFailure;
         if (status != message) qInfo().noquote() << "[RTX][Status]" << message;
         status = message;
         emit q->statusChanged(message, int(native.width), int(native.height), int(work.width),
@@ -175,7 +177,7 @@ struct EnhancementPipeline::Impl
     }
     bool requested() const
     {
-        return options.neural || options.frameGeneration || options.bridgeTest;
+        return options.neural || options.frameGeneration || options.vsrQuality || options.bridgeTest;
     }
     void send(const Command &c)
     {
@@ -191,6 +193,7 @@ struct EnhancementPipeline::Impl
         ready = false;
         inFlight = false;
         active = 0;
+        emit q->timingsChanged(0, 0, 0, 0, 0, 0, false);
         capabilities = 0;
         fgPresented = false;
         presentationCostUs = 0;
@@ -312,7 +315,7 @@ struct EnhancementPipeline::Impl
 #undef GET
         return true;
     }
-    bool importImage(Image &out, HANDLE handle)
+    bool importImage(Image &out, HANDLE handle, Extent size)
     {
         VkExternalMemoryImageCreateInfo external{};
         external.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
@@ -327,7 +330,7 @@ struct EnhancementPipeline::Impl
         ci.pNext = &external;
         ci.imageType = VK_IMAGE_TYPE_2D;
         ci.format = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
-        ci.extent = {native.width, native.height, 1};
+        ci.extent = {size.width, size.height, 1};
         ci.mipLevels = 1;
         ci.arrayLayers = 1;
         ci.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -374,8 +377,8 @@ struct EnhancementPipeline::Impl
             return false;
         pl_vulkan_wrap_params wp{};
         wp.image = out.image;
-        wp.width = int(native.width);
-        wp.height = int(native.height);
+        wp.width = int(size.width);
+        wp.height = int(size.height);
         wp.format = ci.format;
         wp.usage = ci.usage;
         out.texture = pl_vulkan_wrap(vk->gpu, &wp);
@@ -406,7 +409,7 @@ struct EnhancementPipeline::Impl
             {
                 HANDLE h = duplicate(handles[j]);
                 if (okay)
-                    okay = importImage(*images[j], h);
+                    okay = importImage(*images[j], h, j == 0 ? inputExtent(config) : native);
                 if (h)
                     CloseHandle(h);
             }
@@ -415,7 +418,7 @@ struct EnhancementPipeline::Impl
                 if (n < r.generatedCount && !source) okay = false;
                 if (!source) continue;
                 HANDLE extra = duplicate(source);
-                if (okay) okay = importImage(s.generatedFrame(n), extra);
+                if (okay) okay = importImage(s.generatedFrame(n), extra, native);
                 if (extra) CloseHandle(extra);
             }
             HANDLE h = duplicate(r.resources[i].fence);
@@ -534,6 +537,8 @@ struct EnhancementPipeline::Impl
         QString runtime = qEnvironmentVariable("CHIAKI_ENHANCEMENT_RUNTIME_DIR");
         if (runtime.isEmpty())
             runtime = QCoreApplication::applicationDirPath() + QStringLiteral("/runtimes");
+        vsrFailure = options.vsrQuality && !hdr ? verifyVsrRuntime(runtime) : QString();
+        const bool enableVsr = options.vsrQuality && vsrFailure.isEmpty();
         if (options.neural || options.frameGeneration)
         {
             const bool sm86 = options.frameGeneration && !hdr && usesSm86(
@@ -563,13 +568,16 @@ struct EnhancementPipeline::Impl
         config.percent = unsigned(options.percent);
         config.sharpness = unsigned(options.sharpness);
         config.fgMultiplier = options.fgMultiplier;
+        config.vsrQuality = enableVsr ? options.vsrQuality : 0;
+        config.inputWidth = enableVsr && !hdr ? options.inputWidth : 0;
+        config.inputHeight = enableVsr && !hdr ? options.inputHeight : 0;
         config.nrPassCount = options.nrPassCount;
         config.nrTuning = options.nrTuning;
         std::copy(options.additionalPasses.begin(), options.additionalPasses.end(), config.additionalPasses);
         config.flags = (options.neural ? Neural : 0) |
                        (options.frameGeneration ? FrameGeneration : 0) |
                        ((options.neural && options.fsr && canUpscale(native, work)) ? Fsr : 0) |
-                       (options.bridgeTest ? BridgeTest : 0) | (hdr ? HdrLinear : 0);
+                       (options.bridgeTest ? BridgeTest : 0) | (hdr ? HdrLinear : 0) | (enableVsr ? Vsr : 0);
         qInfo() << "[RTX][NR] configured_passes=" << config.nrPassCount;
         for (unsigned n = 0; n < config.nrPassCount; ++n) {
             const auto p = passConfig(config, n);
@@ -632,6 +640,7 @@ struct EnhancementPipeline::Impl
                     return;
                 }
                 capabilities = r.activeFlags;
+                work = {r.width, r.height};
                 // Runtime/feature failures are not proof of unsupported hardware.
                 // Keep the user control available for retry.
                 if (!capabilities)
@@ -711,6 +720,12 @@ struct EnhancementPipeline::Impl
                         interval / (1000 * (generatedInOutput + 1)))));
                 }
                 lastTimestamp = r.timestampUs;
+                if (timingClock.elapsed() >= 250) {
+                    emit q->timingsChanged(r.nrGpuUs / 1000.0, r.reconstructionGpuUs / 1000.0,
+                        r.fgGpuUs / 1000.0, r.vsrGpuUs / 1000.0, r.flowTimeUs / 1000.0,
+                        generated ? (generatedInOutput * phaseIntervalMs) : 0.0, bool(active & Vsr));
+                    timingClock.restart();
+                }
                 report(QString::fromUtf8(r.message) + (presentationLimited
                     ? QCoreApplication::translate("EnhancementPipeline", "; FG presentation skipped to preserve real FPS") : QString()));
                 emit q->frameAvailable();
@@ -734,6 +749,7 @@ void EnhancementPipeline::reset()
 {
     impl->stop();
     impl->failed = false;
+    impl->vsrFailure.clear();
     impl->native = {};
     impl->work = {};
     impl->report(QCoreApplication::translate("EnhancementPipeline", "Off"));
@@ -768,6 +784,7 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
     const bool sameResources = sameEncoding && i.hdr == hdr && i.vk == vk && i.native.width == native.width &&
         i.native.height == native.height && i.options.neural == options.neural &&
         i.options.frameGeneration == options.frameGeneration && i.options.fgMultiplier == options.fgMultiplier && i.options.bridgeTest == options.bridgeTest &&
+        i.options.vsrQuality == options.vsrQuality && i.options.inputWidth == options.inputWidth && i.options.inputHeight == options.inputHeight &&
         (!options.neural || (i.options.percent == options.percent && i.options.nrPassCount == options.nrPassCount &&
             (options.nrPassCount < 2 || i.options.additionalPasses[0].percent == options.additionalPasses[0].percent) &&
             (options.nrPassCount < 3 || i.options.additionalPasses[1].percent == options.additionalPasses[1].percent)));
@@ -781,8 +798,9 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
         return;
     }
     {
-        i.setApplying(options.neural || options.frameGeneration || options.bridgeTest);
+        i.setApplying(options.neural || options.frameGeneration || options.vsrQuality || options.bridgeTest);
         i.stop(true);
+        i.vsrFailure.clear();
         i.vk = vk;
         i.native = native;
         i.work = nrExtent(native.width, native.height, options.percent);
@@ -938,6 +956,7 @@ bool EnhancementPipeline::frameGenerationReady() const
 }
 
 bool EnhancementPipeline::generatedOutput() const { return impl->generated && bool(impl->active & FrameGeneration); }
+unsigned EnhancementPipeline::outputPhase() const { return generatedOutput() ? impl->generatedIndex + 1 : 0; }
 
 bool EnhancementPipeline::ownsPresentation() const { return impl->ready && !impl->failed && bool(impl->capabilities); }
 

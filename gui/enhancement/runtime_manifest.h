@@ -12,6 +12,17 @@
 
 namespace chiaki_enhancement
 {
+// RTX Video SDK 1.1 / NVIDIA-signed nvngx_vsr.dll 1.6.0.0. Supplied separately.
+inline QString verifyVsrRuntime(const QString &runtime)
+{
+    QFile file(QDir(runtime).filePath(QStringLiteral("nvngx_vsr.dll")));
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file))
+        return QCoreApplication::translate("EnhancementRuntime", "VSR runtime is missing. Copy NVIDIA RTX Video SDK nvngx_vsr.dll 1.6.0.0 into runtimes/ and restart the stream.");
+    if (hash.result().toHex() != "c3d88eea5ff7a548edefa66414cf6e77464d0947277c904f324dd23abf58a1ed")
+        return QCoreApplication::translate("EnhancementRuntime", "VSR runtime does not match the tested NVIDIA 1.6.0.0 release; ordinary scaling retained.");
+    return {};
+}
 // Return an actionable error, or an empty string after validating all files
 // used by this request. Optional packages are not prerequisites for each other.
 inline QString verifyRuntimeManifest(const QString &runtime, bool neural, bool frameGeneration, bool sm86 = false)

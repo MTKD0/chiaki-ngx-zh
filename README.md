@@ -2,11 +2,13 @@
 
 基于 [TheHiepDang/chiaki-ngx](https://github.com/TheHiepDang/chiaki-ngx) 的中文开发分支，用于 PlayStation 远程游玩与串流画面增强研究。
 
-## 当前版本：0.2.0-zh.2
+## 当前版本：0.2.0-zh.3
 
 - 默认使用简体中文；在“设置 → 常规 → 界面语言”选择 English，重新启动后生效。
 - 汉化主界面、设置、连接与注册流程、RTX 面板、统计浮层及常见运行库提示。保留显卡、编码格式和算法名称；底层驱动、NGX 及增强进程的原始诊断信息可能仍为英文。
 - 保留实验性 DLSS 5 神经渲染和 FSR 重建；插帧方式可选择 **DLSS FG（2x/3x/4x）** 或 **smooth motion（仅 2x，需在 NVIDIA App 中手动启用）**。NR 默认关闭，串流期间按 Ctrl+Shift+F 打开 RTX 设置。
+- NVIDIA VSR 已接入低、中、高、极高四档（SDR）；与 FSR/FSRCNNX 切换时确认替换，保留用途不同的 NR。4x 浮窗按每张中间帧统计，新增分项画面延迟估算。详见 [VSR 与性能统计](docs/diy/vsr-and-statistics.md)。
+- VSR 运行库 `runtimes/nvngx_vsr.dll` 由用户提供，当前验证版本为 NVIDIA 签名的 1.6.0.0；本机测试目录已准备，分发 ZIP 不包含。
 - 本地测试需要兼容的 `runtimes/nvngx_dlssnr.dll`。仓库和下载 ZIP 不包含该文件。本次开发使用版本 310.9.16.0，SHA256 为 `cdfa6c1ec784867182164c7836f324f087b5c9f374d0c9fe46f54999feabf3ed`；这是未签名的社区兼容构建。
 - 开发版通过浏览器打开本仓库 Releases 下载更新，避免被原项目的更新覆盖。私有仓库需要在浏览器登录有权限的 GitHub 账号。
 

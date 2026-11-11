@@ -10,6 +10,7 @@ int main(int argc, char **argv)
     QCoreApplication app(argc, argv);
     QTemporaryDir directory;
     CHECK(directory.isValid());
+    CHECK(chiaki_enhancement::verifyVsrRuntime(directory.path()).contains("missing"));
     auto write = [&](const QString &name, const QByteArray &data) {
         const QString path = QDir(directory.path()).filePath(name);
         QDir().mkpath(QFileInfo(path).absolutePath());
@@ -25,6 +26,8 @@ int main(int argc, char **argv)
     packages.insert("sm86", QJsonObject{{"nvngx_dlssg.dll", digest("stock")}, {"sm86-proxy/version.dll", digest("proxy")}, {"sm86-proxy/backend.dll", digest("backend")}});
     auto manifest = [&]() { return write("runtime-manifest.json", QJsonDocument(QJsonObject{{"schema", 2}, {"packages", packages}}).toJson()); };
     CHECK(manifest());
+    CHECK(write("nvngx_vsr.dll", "untrusted VSR"));
+    CHECK(chiaki_enhancement::verifyVsrRuntime(directory.path()).contains("does not match"));
     CHECK(write("nvngx_dlssg.dll", "official"));
     // Native FG works without NR or proxy files, even when their pins exist.
     CHECK(chiaki_enhancement::verifyRuntimeManifest(directory.path(), false, true).isEmpty());

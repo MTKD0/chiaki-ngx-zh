@@ -318,6 +318,9 @@ QmlBackend::QmlBackend(Settings *settings, QmlMainWindow *window)
     setConnectState(PsnConnectState::NotStarted);
     connect(settings_qml, &QmlSettings::audioVolumeChanged, this, &QmlBackend::updateAudioVolume);
     connect(settings_qml, &QmlSettings::placeboChanged, window, &QmlMainWindow::updatePlacebo);
+    connect(settings_qml, &QmlSettings::videoPresetChanged, window, [this, window]() {
+        window->setVideoPreset(static_cast<QmlMainWindow::VideoPreset>(settings_qml->videoPreset()));
+    });
     connect(settings_qml, &QmlSettings::eyeCandyChanged, window, &QmlMainWindow::requestOverlayUpdate);
     connect(settings_qml, &QmlSettings::enhancementChanged, window, &QmlMainWindow::updateEnhancementSettings);
         connect(settings_qml,

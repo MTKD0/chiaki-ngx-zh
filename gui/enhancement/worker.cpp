@@ -267,13 +267,13 @@ struct Gpu
         check(queue->GetTimestampFrequency(&timestampFrequency), "Timestamp frequency");
         D3D12_QUERY_HEAP_DESC qh{};
         qh.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        qh.Count = MaxNrPasses * 4 + 2;
+        qh.Count = MaxNrPasses * 4 + 4;
         check(device->CreateQueryHeap(&qh, IID_PPV_ARGS(&timestamps)), "Timestamp query heap");
         D3D12_HEAP_PROPERTIES rh{};
         rh.Type = D3D12_HEAP_TYPE_READBACK;
         D3D12_RESOURCE_DESC rb{};
         rb.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        rb.Width = (MaxNrPasses * 4 + 2) * sizeof(uint64_t);
+        rb.Width = (MaxNrPasses * 4 + 4) * sizeof(uint64_t);
         rb.Height = 1;
         rb.DepthOrArraySize = 1;
         rb.MipLevels = 1;
@@ -353,16 +353,16 @@ struct Gpu
     }
     void resolveTimers()
     {
-        list->ResolveQueryData(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, MaxNrPasses * 4 + 2,
+        list->ResolveQueryData(timestamps.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, MaxNrPasses * 4 + 4,
                                timestampReadback.Get(), 0);
     }
-    std::array<uint64_t, MaxNrPasses * 2 + 1> timings()
+    std::array<uint64_t, MaxNrPasses * 2 + 2> timings()
     {
         UINT64 *data = nullptr;
-        D3D12_RANGE range{0, (MaxNrPasses * 4 + 2) * sizeof(uint64_t)};
+        D3D12_RANGE range{0, (MaxNrPasses * 4 + 4) * sizeof(uint64_t)};
         check(timestampReadback->Map(0, &range, reinterpret_cast<void **>(&data)),
               "Map timestamps");
-        std::array<uint64_t, MaxNrPasses * 2 + 1> times{};
+        std::array<uint64_t, MaxNrPasses * 2 + 2> times{};
         for (unsigned n = 0; n < times.size(); ++n)
             times[n] = (data[n * 2 + 1] - data[n * 2]) * 1000000 / timestampFrequency;
         D3D12_RANGE empty{0, 0};
@@ -790,7 +790,7 @@ struct Worker
 {
     std::unique_ptr<Gpu> gpu;
     std::array<Slot, SlotCount> resources;
-    std::unique_ptr<NgxFeature> fg;
+    std::unique_ptr<NgxFeature> fg, vsr;
     std::array<NrStage, MaxNrPasses> nrStages;
     bool hasNr() const { return bool(nrStages[0].feature); }
     void clearNr()
@@ -801,11 +801,11 @@ struct Worker
     }
     std::unique_ptr<OpticalFlow> optical;
     HMODULE proxy = nullptr;
-    Texture fullMotion, fullDepth, fgReal, thumbnail, opticalProxy;
+    Texture fullMotion, fullDepth, fgReal, thumbnail, opticalProxy, vsrOutput;
     std::vector<uint8_t> previousThumbnail, previousRealPixels;
     Command config{};
     fs::path runtimeDir;
-    std::string nrError, fgError;
+    std::string nrError, fgError, vsrError;
     bool fgVerified = false, history = false;
     uint64_t lastFrame = 0, fgFrameId = 0;
     ~Worker()
@@ -822,6 +822,7 @@ struct Worker
             {
             }
             fg.reset();
+            vsr.reset();
             clearNr();
             optical.reset();
         }
@@ -843,6 +844,7 @@ struct Worker
         runtimeDir = dir;
         gpu.reset(new Gpu(c.adapterLuid));
         const bool hdr = (c.flags & HdrLinear) != 0;
+        const auto inputSize = inputExtent(c);
         const auto colorFormat = hdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
         std::fprintf(stderr, "[RTX][HDR] enabled=%u shared_format=%s model_input=sRGB reference_white_nits=203\n",
             unsigned(hdr), hdr ? "RGBA16F linear BT.2020" : "RGBA8 sRGB");
@@ -852,7 +854,7 @@ struct Worker
         for (unsigned i = 0; i < SlotCount; ++i)
         {
             auto &s = resources[i];
-            s.input = gpu->texture(c.width, c.height, colorFormat, true);
+            s.input = gpu->texture(inputSize.width, inputSize.height, colorFormat, true);
             s.real = gpu->texture(c.width, c.height, colorFormat, true);
             s.generated = gpu->texture(c.width, c.height, colorFormat, true);
             if ((c.flags & FrameGeneration) && !hdr)
@@ -862,8 +864,9 @@ struct Worker
                   "Create shared fence");
         }
         thumbnail = gpu->texture(64, 36);
-        if (hdr) opticalProxy = gpu->texture(c.width, c.height);
-        auto extent = nrExtent(c.width, c.height, c.percent);
+        if (hdr || inputSize.width != c.width || inputSize.height != c.height)
+            opticalProxy = gpu->texture(c.width, c.height);
+        auto extent = nrExtent(inputSize.width, inputSize.height, c.percent);
         reply.width = extent.width;
         reply.height = extent.height;
         if (c.flags & Neural)
@@ -875,7 +878,7 @@ struct Worker
                 {
                     auto &stage = nrStages[creatingPass];
                     const auto settings = passConfig(c, creatingPass);
-                    const auto size = nrExtent(c.width, c.height, settings.percent);
+                    const auto size = nrExtent(inputSize.width, inputSize.height, settings.percent);
                     stage.feature = std::make_shared<NgxFeature>();
                     if (creatingPass == 0) stage.feature->load(*gpu, runtimeDir / L"nvngx_dlssnr.dll");
                     else stage.feature->shareRuntime(nrStages[0].feature);
@@ -890,12 +893,12 @@ struct Worker
                     stage.edited = gpu->texture(size.width, size.height);
                     stage.motion = gpu->texture(size.width, size.height, DXGI_FORMAT_R16G16_FLOAT);
                     stage.depth = gpu->texture(size.width, size.height, DXGI_FORMAT_R32_FLOAT);
-                    stage.upInput = gpu->texture(c.width, c.height);
-                    stage.upOutput = gpu->texture(c.width, c.height);
-                    stage.composite = gpu->texture(c.width, c.height, colorFormat);
+                    stage.upInput = gpu->texture(inputSize.width, inputSize.height);
+                    stage.upOutput = gpu->texture(inputSize.width, inputSize.height);
+                    stage.composite = gpu->texture(inputSize.width, inputSize.height, colorFormat);
                     if (hdr) {
-                        stage.proxy = gpu->texture(c.width, c.height);
-                        stage.sharpened = gpu->texture(c.width, c.height);
+                        stage.proxy = gpu->texture(inputSize.width, inputSize.height);
+                        stage.sharpened = gpu->texture(inputSize.width, inputSize.height);
                     }
                     std::fprintf(stderr, "[RTX][NR][Pass%u] created %ux%u percent=%u fsr=%u sharpness=%u\n",
                         creatingPass + 1, size.width, size.height, settings.percent, settings.fsr, settings.sharpness);
@@ -906,6 +909,25 @@ struct Worker
                 nrError = "Pass " + std::to_string(creatingPass + 1) + ": " + e.what();
                 clearNr();
                 std::fprintf(stderr, "[RTX][NR] chain disabled: %s\n", nrError.c_str());
+            }
+        }
+        if ((c.flags & Vsr) && hdr) vsrError = "VSR requires SDR; ordinary HDR scaling retained";
+        if ((c.flags & Vsr) && !hdr) {
+            try {
+                vsr = std::make_unique<NgxFeature>();
+                vsr->load(*gpu, runtimeDir / L"nvngx_vsr.dll");
+                vsr->parameters.Set("CreationNodeMask", 1u);
+                vsr->parameters.Set("VisibilityNodeMask", 1u);
+                gpu->begin();
+                ngxCheck(vsr->create(gpu->list.Get(), static_cast<NVSDK_NGX_Feature>(16),
+                    &vsr->parameters, &vsr->handle), "Create VSR");
+                gpu->submit();
+                vsrOutput = gpu->texture(c.width, c.height);
+                std::fprintf(stderr, "[RTX][VSR] ready quality=%u input=%ux%u output=%ux%u\n",
+                    c.vsrQuality, inputSize.width, inputSize.height, c.width, c.height);
+            } catch (const std::exception &e) {
+                vsrError = e.what(); vsr.reset();
+                std::fprintf(stderr, "[RTX][VSR] disabled: %s\n", e.what());
             }
         }
         if ((c.flags & FrameGeneration) && hdr) {
@@ -979,12 +1001,13 @@ struct Worker
                 reply.resources[i].additionalGenerated[n - 1] = exportHandle(s.generatedFrame(n).resource.Get());
         }
         reply.generatedCount = fg ? c.fgMultiplier - 1 : 0;
-        reply.activeFlags = (hasNr() ? Neural : 0) | (fg ? FrameGeneration : 0) | (c.flags & BridgeTest);
+        reply.activeFlags = (hasNr() ? Neural : 0) | (fg ? FrameGeneration : 0) | (vsr ? Vsr : 0) | (c.flags & BridgeTest);
         std::string message = "GPU bridge ready";
         if (!nrError.empty())
             message += "; NR: " + nrError;
         if (!fgError.empty())
             message += "; FG: " + fgError;
+        if (!vsrError.empty()) message += "; VSR: " + vsrError;
         std::snprintf(reply.message, sizeof reply.message, "%s", message.c_str());
         return reply;
     }
@@ -1022,7 +1045,8 @@ struct Worker
     Reply process(const Command &c)
     {
         if (c.width != config.width || c.height != config.height || c.revision != config.revision ||
-            (c.flags & ~(Reset | Fsr)) != (config.flags & ~(Reset | Fsr)) || !sameNrResources(c, config) || c.fgMultiplier != config.fgMultiplier)
+            (c.flags & ~(Reset | Fsr)) != (config.flags & ~(Reset | Fsr)) || !sameNrResources(c, config) || c.fgMultiplier != config.fgMultiplier || c.vsrQuality != config.vsrQuality ||
+            c.inputWidth != config.inputWidth || c.inputHeight != config.inputHeight)
             throw std::runtime_error("Stale frame/configuration revision");
         if (c.frameId <= lastFrame)
             throw std::runtime_error("Frame already processed or out of order");
@@ -1037,10 +1061,11 @@ struct Worker
         check(gpu->queue->Wait(s.fence.Get(), c.fenceValue), "Wait for Vulkan producer");
         gpu->wait();
         const bool hdr = (c.flags & HdrLinear) != 0;
+        const auto inputSize = inputExtent(c);
         Texture *flowInput = &s.input;
-        if (hdr && optical) {
+        if (optical && opticalProxy.resource) {
             gpu->begin();
-            gpu->run("hdrProxyMain", &s.input, opticalProxy);
+            gpu->run(hdr ? "hdrProxyMain" : "scaleMain", &s.input, opticalProxy);
             gpu->submit();
             flowInput = &opticalProxy;
         }
@@ -1082,7 +1107,7 @@ struct Worker
         }
         QueryPerformanceCounter(&flowEnd);
         gpu->begin();
-        for (unsigned k = 0; k < MaxNrPasses * 4 + 2; ++k)
+        for (unsigned k = 0; k < MaxNrPasses * 4 + 4; ++k)
             gpu->mark(k);
         Texture *processed = &s.input;
         uint32_t active = c.flags & BridgeTest;
@@ -1155,7 +1180,7 @@ struct Worker
                 gpu->mark(pass * 4 + 1);
                 gpu->mark(pass * 4 + 2);
                 active |= Neural;
-                const bool upscale = reduced.width < c.width || reduced.height < c.height;
+                const bool upscale = reduced.width < inputSize.width || reduced.height < inputSize.height;
                 const bool fsr = upscale && settings.fsr;
                 const char *scaler = fsr ? "easuMain" : "scaleMain";
                 if (upscale)
@@ -1192,7 +1217,33 @@ struct Worker
                 gpu->mark(pass * 4 + 3);
             }
         }
-        gpu->copy(*processed, s.real);
+        if (vsr) {
+            gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            gpu->transition(vsrOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            vsr->resource("Input1", *processed);
+            vsr->resource("Output", vsrOutput);
+            auto &p = vsr->parameters;
+            for (const char *key : {"Rect.X", "Rect.Y", "OutRect.X", "OutRect.Y"}) p.Set(key, 0u);
+            p.Set("Rect.W", processed->width); p.Set("Rect.H", processed->height);
+            p.Set("OutRect.W", c.width); p.Set("OutRect.H", c.height);
+            p.Set("VSR.QualityLevel", c.vsrQuality);
+            gpu->mark(MaxNrPasses * 4 + 2);
+            try {
+                vsr->eval(*gpu);
+                processed = &vsrOutput;
+                active |= Vsr;
+            } catch (const std::exception &e) {
+                // Finish and retire all queued references before releasing the feature.
+                gpu->submit(); vsrError = e.what(); vsr.reset(); gpu->begin();
+                std::fprintf(stderr, "[RTX][VSR] evaluation failed; ordinary scaling restored: %s\n", e.what());
+            }
+            gpu->mark(MaxNrPasses * 4 + 3);
+        }
+        if (processed->width != s.real.width || processed->height != s.real.height)
+            gpu->run("scaleMain", processed, s.real);
+        else gpu->copy(*processed, s.real);
+        processed = &s.real;
+
         if (fg)
         {
             gpu->run("motionMain", nullptr, fullMotion, nullptr, nullptr, &optical->vectors);
@@ -1358,6 +1409,7 @@ struct Worker
                     static_cast<unsigned long long>(stageTimes[pass * 2 + 1]));
         }
         r.fgGpuUs = stageTimes[MaxNrPasses * 2];
+        r.vsrGpuUs = (active & Vsr) ? stageTimes[MaxNrPasses * 2 + 1] : 0;
         r.vramBytes = gpu->vram();
         r.workerTimeUs =
             static_cast<uint64_t>((end.QuadPart - begin.QuadPart) * 1000000 / freq.QuadPart);
@@ -1371,6 +1423,8 @@ struct Worker
                                         : "; FG off";
         if (!fgError.empty())
             msg += "; FG unavailable: " + fgError;
+        msg += active & Vsr ? "; VSR active" : "; VSR off";
+        if (!vsrError.empty()) msg += "; VSR unavailable: " + vsrError;
         std::snprintf(r.message, sizeof r.message, "%s", msg.c_str());
         return r;
     }

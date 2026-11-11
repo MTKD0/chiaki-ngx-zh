@@ -50,6 +50,8 @@ Dialog {
 
         Label {
             id: label
+            Layout.maximumWidth: Math.max(240, Math.min(640, dialog.parent ? dialog.parent.width - 80 : 640))
+            wrapMode: Text.WordWrap
             Keys.onEscapePressed: dialog.reject()
             Keys.onReturnPressed: dialog.accept()
         }

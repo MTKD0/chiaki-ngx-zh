@@ -52,3 +52,5 @@ python scripts/check-translations.py
 2026-11-11，本机通过核心测试、翻译占位符/HTML 检查、增强与更新界面检查、插帧设置持久化检查、中英文 Qt/QML 启动检查、MSVC 增强进程模型和 D3D12 自检，以及 RTX 5070 Ti Laptop GPU 上的合成共享纹理测试：DLSS FG 2x/3x/4x、NR 与 4x FG 组合、HDR NR 回归。这些测试不等同于真实游戏串流、输入延迟、画质或显示器扫描输出验证。
 
 当前已接入 DLSS FG 的 2x/3x/4x 选择，以及固定 2x 的 smooth motion 方式。smooth motion 需要用户在 NVIDIA App 中添加主程序并启用，尚未验证驱动实际激活。详细操作和硬件限制见[插帧说明](frame-generation.md)。GTA6 专项优化仍属后续研究；NR 渲染遍数表示重复增强画面，不能当作帧生成倍数。
+
+2026-11-12，补充接入 NVIDIA VSR 四档质量、同类超分确认替换、4x 分阶段帧率统计及分项延迟估算。操作、运行库身份与验证范围见 [VSR 与性能统计](vsr-and-statistics.md)。

@@ -38,6 +38,7 @@ class Backend : public QObject
     Backend()
     {
         settingsMap.insert("enhancementNeural", false);
+        settingsMap.insert("enhancementVsrQuality", 0);
         settingsMap.insert("enhancementCustomizePasses", false);
         settingsMap.insert("enhancementNrPreset", 0);
         settingsMap.insert("enhancementIntensity", 1.0);
@@ -109,6 +110,11 @@ int main(int argc, char **argv)
     }
     std::unique_ptr<QObject> root(component.create());
     CHECK(root);
+    auto vsrQuality = root->findChild<QObject *>("vsrQuality");
+    CHECK(vsrQuality && vsrQuality->property("count").toInt() == 5);
+    CHECK(QMetaObject::invokeMethod(vsrQuality, "activated", Q_ARG(int, 3)));
+    CHECK(backend.settings()->value("enhancementVsrQuality").toInt() == 3);
+    backend.settings()->insert("enhancementVsrQuality", 0);
     auto nr = root->findChild<QObject *>("nrToggle"), fsr = root->findChild<QObject *>("fsrToggle"),
          sharp = root->findChild<QObject *>("sharpness"),
          fg = root->findChild<QObject *>("fgToggle"), scale = root->findChild<QObject *>("nrScale");
@@ -421,7 +427,8 @@ int main(int argc, char **argv)
     auto liveNr = live->findChild<QQuickItem *>("nrToggle");
     auto liveStats = live->findChild<QQuickItem *>("gameplayStatsToggle");
     auto livePassCount = live->findChild<QQuickItem *>("nrPassCount");
-    CHECK(liveNr && liveStats && livePassCount);
+    auto liveVsr = live->findChild<QQuickItem *>("vsrQuality");
+    CHECK(liveNr && liveStats && livePassCount && liveVsr);
     CHECK(liveNr->property("text").toString() == "Enable");
     CHECK(liveNr->property("font").value<QFont>().pixelSize() == 14);
     QSignalSpy nrToggles(liveNr, SIGNAL(toggled()));
@@ -431,7 +438,11 @@ int main(int argc, char **argv)
     CHECK(!backend.settings()->value("enhancementNeural").toBool());
     CHECK(nrToggles.count() == 1);
     QTest::keyClick(&window, Qt::Key_Right);
+    CHECK(liveVsr->hasActiveFocus());
+    QTest::keyClick(&window, Qt::Key_Right);
     CHECK(liveStats->hasActiveFocus()); // Disabled NR options are skipped.
+    QTest::keyClick(&window, Qt::Key_Left);
+    CHECK(liveVsr->hasActiveFocus());
     QTest::keyClick(&window, Qt::Key_Left);
     CHECK(liveNr->hasActiveFocus());
     QTest::keyClick(&window, Qt::Key_Return);
@@ -439,7 +450,11 @@ int main(int argc, char **argv)
     CHECK(backend.settings()->value("enhancementNeural").toBool());
     CHECK(nrToggles.count() == 2);
     QTest::keyClick(&window, Qt::Key_Right);
+    CHECK(liveVsr->hasActiveFocus());
+    QTest::keyClick(&window, Qt::Key_Right);
     CHECK(livePassCount->hasActiveFocus());
+    QTest::keyClick(&window, Qt::Key_Left);
+    CHECK(liveVsr->hasActiveFocus());
     QTest::keyClick(&window, Qt::Key_Left);
     CHECK(liveNr->hasActiveFocus());
     QTest::keyClick(&window, Qt::Key_Down);

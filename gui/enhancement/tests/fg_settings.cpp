@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "enhancementchoices.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <cstdio>
@@ -41,6 +42,33 @@ int main(int argc, char **argv)
     CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == 2);
     reopened.SetEnhancementFrameGenerationMultiplier(99);
     CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == 4);
-    std::puts("FG settings: legacy migration, backend exclusion, fixed Smooth Motion 2x and persisted DLSS multiplier passed");
+    reopened.SetEnhancementNeural(true);
+    reopened.SetEnhancementPassFsr(0, true);
+    reopened.SetPlaceboPreset(PlaceboPreset::HighQualityAdvancedSpatial);
+    CHECK(EnhancementChoices::conflicts(reopened, "vsr", 3).contains("FSR"));
+    CHECK(reopened.GetEnhancementVsrQuality() == 0); // Query/cancel must not mutate.
+    CHECK(reopened.GetEnhancementPassFsr(0));
+    EnhancementChoices::apply(reopened, "vsr", 3);
+    CHECK(reopened.GetEnhancementNeural()); // NR has a different purpose and survives.
+    CHECK(reopened.GetEnhancementVsrQuality() == 3);
+    CHECK(!reopened.GetEnhancementPassFsr(0));
+    CHECK(reopened.GetPlaceboPreset() == PlaceboPreset::HighQuality);
+    CHECK(EnhancementChoices::conflicts(reopened, "fsr", 1) == "NVIDIA VSR");
+    CHECK(EnhancementChoices::conflicts(reopened, "upscaler", int(PlaceboUpscaler::FSRCNNX16)) == "NVIDIA VSR");
+    CHECK(EnhancementChoices::conflicts(reopened, "preset", 3) == "NVIDIA VSR");
+    CHECK(EnhancementChoices::conflicts(reopened, "upscaler", int(PlaceboUpscaler::Bilinear)).isEmpty());
+    EnhancementChoices::apply(reopened, "fsr", 1);
+    CHECK(reopened.GetEnhancementVsrQuality() == 0 && reopened.GetEnhancementPassFsr(0));
+    CHECK(EnhancementChoices::conflicts(reopened, "upscaler", int(PlaceboUpscaler::FSRCNNX16)).contains("FSR (NR)"));
+    EnhancementChoices::apply(reopened, "upscaler", int(PlaceboUpscaler::FSRCNNX16));
+    CHECK(reopened.GetPlaceboPreset() == PlaceboPreset::Custom && reopened.GetEnhancementNeural());
+    CHECK(!reopened.GetEnhancementPassFsr(0));
+    CHECK(EnhancementChoices::conflicts(reopened, "upscaler", int(PlaceboUpscaler::FSR)) == "FSRCNNX");
+    reopened.SetEnhancementFrameGeneration(true);
+    CHECK(EnhancementChoices::conflicts(reopened, "fgBackend", 2) == "DLSS FG");
+    EnhancementChoices::apply(reopened, "fgBackend", 2);
+    CHECK(!reopened.GetEnhancementFrameGeneration());
+    CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == 2);
+    std::puts("FG migration, backend exclusion, VSR overlap detection/cancellation/replacement and unrelated NR preservation passed");
     return 0;
 }

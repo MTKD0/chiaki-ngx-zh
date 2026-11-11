@@ -15,6 +15,15 @@ Item {
     property bool useSeparateStreamSettingsWindows: false
     Material.theme: Material.Dark
     Material.accent: "#00a7ff"
+    Connections {
+        target: Chiaki.settings
+        function onEnhancementConfirmationRequested(choice, value, existing, requested) {
+            root.showConfirmDialog(qsTr("Overlapping features"),
+                qsTr("You have enabled %1. It serves the same purpose as %2. Apply %2 and replace the overlapping feature?").arg(existing).arg(requested)
+                + (existing === "smooth motion" ? "\n" + qsTr("Also turn Smooth Motion off in NVIDIA App; this app cannot change driver settings.") : ""),
+                () => Chiaki.settings.applyEnhancementChoice(choice, value));
+        }
+    }
 
     function controllerButton(name) {
         let type = "deck";

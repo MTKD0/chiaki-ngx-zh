@@ -16,13 +16,15 @@ struct EnhancementOptions
     int percent = 65, sharpness = 20;
     unsigned nrPassCount = 1;
     unsigned fgMultiplier = 2;
+    unsigned vsrQuality = 0, inputWidth = 0, inputHeight = 0;
     chiaki_enhancement::NrTuning nrTuning;
     std::array<chiaki_enhancement::NrPassConfig, chiaki_enhancement::MaxNrPasses - 1> additionalPasses{};
     bool operator==(const EnhancementOptions &o) const
     {
         return neural == o.neural && fsr == o.fsr && frameGeneration == o.frameGeneration &&
                bridgeTest == o.bridgeTest && percent == o.percent && sharpness == o.sharpness &&
-               nrPassCount == o.nrPassCount && fgMultiplier == o.fgMultiplier && nrTuning == o.nrTuning && additionalPasses == o.additionalPasses;
+               nrPassCount == o.nrPassCount && fgMultiplier == o.fgMultiplier && vsrQuality == o.vsrQuality &&
+               inputWidth == o.inputWidth && inputHeight == o.inputHeight && nrTuning == o.nrTuning && additionalPasses == o.additionalPasses;
     }
 };
 
@@ -48,6 +50,7 @@ class EnhancementPipeline : public QObject
     bool hasUnpresentedOutput() const;
     void setSourceInterval(uint64_t intervalUs);
     bool generatedOutput() const;
+    unsigned outputPhase() const;
     void notePresented(uint64_t presentationWorkUs = 0);
     uint64_t realPresentedCount() const;
     uint64_t generatedPresentedCount() const;
@@ -59,6 +62,7 @@ class EnhancementPipeline : public QObject
     void frameAvailable();
     void neuralUnavailable(QString reason);
     void cadenceChanged(QString summary);
+    void timingsChanged(double nrMs, double reconstructionMs, double fgMs, double vsrMs, double flowMs, double phaseWaitMs, bool vsrActive);
 
   private:
     struct Impl;

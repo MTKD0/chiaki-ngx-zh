@@ -28,6 +28,7 @@ class QmlSettings : public QObject
     Q_PROPERTY(bool enhancementFsr READ enhancementFsr WRITE setEnhancementFsr NOTIFY enhancementControlsChanged)
     Q_PROPERTY(int enhancementSharpness READ enhancementSharpness WRITE setEnhancementSharpness NOTIFY enhancementControlsChanged)
     Q_PROPERTY(bool enhancementFrameGeneration READ enhancementFrameGeneration WRITE setEnhancementFrameGeneration NOTIFY enhancementChanged)
+    Q_PROPERTY(int enhancementVsrQuality READ enhancementVsrQuality WRITE setEnhancementVsrQuality NOTIFY enhancementChanged)
     Q_PROPERTY(int enhancementFrameGenerationBackend READ enhancementFrameGenerationBackend WRITE setEnhancementFrameGenerationBackend NOTIFY enhancementChanged)
     Q_PROPERTY(int enhancementFrameGenerationMultiplier READ enhancementFrameGenerationMultiplier WRITE setEnhancementFrameGenerationMultiplier NOTIFY enhancementChanged)
     Q_PROPERTY(QString applicationExecutable READ applicationExecutable CONSTANT)
@@ -230,6 +231,11 @@ public:
     void setEnhancementSharpness(int value);
     bool enhancementFrameGeneration() const;
     void setEnhancementFrameGeneration(bool value);
+    int enhancementVsrQuality() const;
+    void setEnhancementVsrQuality(int value);
+    Q_INVOKABLE void applyEnhancementChoice(QString choice, int value);
+    Q_INVOKABLE QString enhancementConflict(QString choice, int value) const;
+    void requestEnhancementChoice(QString choice, int value);
     int enhancementFrameGenerationBackend() const;
     void setEnhancementFrameGenerationBackend(int value);
     int enhancementFrameGenerationMultiplier() const;
@@ -786,6 +792,7 @@ signals:
     void currentProfileChanged();
     void profilesChanged();
     void placeboUpscalerChanged();
+    void enhancementConfirmationRequested(QString choice, int value, QString existing, QString requested);
     void placeboPlaneUpscalerChanged();
     void placeboDownscalerChanged();
     void placeboPlaneDownscalerChanged();

@@ -60,6 +60,7 @@ $excludedNr = 0
 foreach ($file in Get-ChildItem -LiteralPath $sourceRoot -Recurse -File) {
     $relative = [IO.Path]::GetRelativePath($sourceRoot, $file.FullName).Replace('\','/')
     if ($file.Name -in @('nvngx_dlssnr.dll','dlssnr.dll')) { $excludedNr++; continue }
+    if ($file.Name -eq 'nvngx_vsr.dll') { continue } # Local SDK runtime remains user supplied.
     if ($relative -match '(^|/)(logs|capture|captures)/' -or
         $file.Extension -in @('.log','.jsonl','.dmp','.pdb','.patch') -or
         $file.Name -match '^(SESSION-HANDOFF|GAMEPLAY-CAPTURE-FINDINGS|FIRST-COMMIT|TECHNICAL|TEST-REPORT)' -or
@@ -87,6 +88,8 @@ $readme = $readme.Replace('](docs/diy/windows-zh.md)',
     '](https://github.com/MTKD0/chiaki-ngx-zh/blob/main/docs/diy/windows-zh.md)')
 $readme = $readme.Replace('](docs/diy/frame-generation.md)',
     '](https://github.com/MTKD0/chiaki-ngx-zh/blob/main/docs/diy/frame-generation.md)')
+$readme = $readme.Replace('](docs/diy/vsr-and-statistics.md)',
+    '](https://github.com/MTKD0/chiaki-ngx-zh/blob/main/docs/diy/vsr-and-statistics.md)')
 [IO.File]::WriteAllText((Join-Path $destinationRoot 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $repoRoot 'gui/res/chiaking-logo.svg') -Destination (Join-Path $destinationRoot 'README-logo.svg') -Force
 # Keep source identity fields used by application diagnostics, without carrying
@@ -103,16 +106,16 @@ if (Test-Path -LiteralPath $sourceInfoPath) {
 New-Item -ItemType Directory -Path (Join-Path $destinationRoot 'updates') -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-Update.ps1') -Destination (Join-Path $destinationRoot 'updates/Install-Update.ps1') -Force
 $info['app_version'] = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $destinationRoot 'chiaki.exe')).ProductVersion
-$info['packaged_at'] = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(7)).ToString('o')
-$info['update'] = 'bundled-fg-runtime-nr-user-supplied'
+$info['packaged_at'] = [DateTimeOffset]::UtcNow.ToOffset([TimeSpan]::FromHours(8)).ToString('o')
+$info['update'] = 'bundled-fg-runtime-nr-vsr-user-supplied'
 $info['runtime_manifest_sha256'] = (Get-FileHash -LiteralPath (Join-Path $destinationRoot 'runtimes/runtime-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-$info['external_runtime_policy'] = 'Only nvngx_dlssnr.dll is user supplied; FG and SM86 components are bundled with notices.'
-$info['bundled_runtimes'] = [ordered]@{ frame_generation = $true; sm86 = $true; neural = $false }
+$info['external_runtime_policy'] = 'NR and VSR DLLs are user supplied; FG and SM86 components are bundled with notices.'
+$info['bundled_runtimes'] = [ordered]@{ frame_generation = $true; sm86 = $true; neural = $false; vsr = $false }
 $info['runtime_directory'] = 'runtimes'
 $info['worker_path'] = 'enhancement/nvngx.dll'
 $info | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $destinationRoot 'build-info.json') -Encoding utf8
-if (Get-ChildItem -LiteralPath $destinationRoot -Recurse -File | Where-Object { $_.Name -in @('nvngx_dlssnr.dll','dlssnr.dll') }) {
-    throw 'NR DLL unexpectedly remains in the output.'
+if (Get-ChildItem -LiteralPath $destinationRoot -Recurse -File | Where-Object { $_.Name -in @('nvngx_dlssnr.dll','dlssnr.dll','nvngx_vsr.dll') }) {
+    throw 'User-supplied NR/VSR DLL unexpectedly remains in the output.'
 }
 if (@(Get-ChildItem -LiteralPath (Join-Path $destinationRoot 'runtimes') -Recurse -File -Filter 'nvngx_dlssg.dll').Count -ne 1) {
     throw 'The release must contain exactly one FG runtime.'

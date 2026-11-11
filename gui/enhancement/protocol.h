@@ -8,7 +8,7 @@
 namespace chiaki_enhancement
 {
 constexpr uint32_t Magic = 0x58474e43; // CNGX, little endian, Windows x64 only
-constexpr uint32_t Version = 7;
+constexpr uint32_t Version = 8;
 constexpr unsigned MaxNrPasses = 3;
 constexpr unsigned MaxGeneratedFrames = 3;
 constexpr unsigned SlotCount = 3;
@@ -26,7 +26,8 @@ enum Flag : uint32_t
     Reset = 8,
     BridgeTest = 16,
     // RGBA16F, linear BT.2020, 1.0 = 203 cd/m2. Model inputs remain SDR sRGB.
-    HdrLinear = 32
+    HdrLinear = 32,
+    Vsr = 64
 };
 enum class Result : uint32_t
 {
@@ -64,6 +65,9 @@ inline double presentationInterval(double streamInterval, double refreshInterval
     (void)vsync;
     return 0.0;
 }
+// The three generated phases share a real-frame ID but are distinct presentations.
+inline uint64_t presentationKey(uint64_t frameId, unsigned phase)
+{ return (uint64_t(1) << 63) | (frameId << 2) | (phase & 3); }
 
 // Fixed-size messages, no pointers/STL/Qt types cross the process boundary.
 // Replies contain worker-local handles, kept alive by the worker. Chiaki pulls
@@ -102,6 +106,7 @@ struct Command
     uint32_t percent = 65, sharpness = 20, slot = 0, fgMultiplier = 2;
     uint64_t adapterLuid = 0, frameId = 0, timestampUs = 0, revision = 0, fenceValue = 0;
     uint32_t nrPassCount = 1;
+    uint32_t vsrQuality = 0, inputWidth = 0, inputHeight = 0;
     NrTuning nrTuning;
     NrPassConfig additionalPasses[MaxNrPasses - 1];
 };
@@ -118,7 +123,7 @@ struct Reply
     uint32_t generatedCount = 0, reserved = 0;
     uint64_t frameId = 0, timestampUs = 0, revision = 0, fenceValue = 0;
     uint64_t workerTimeUs = 0, flowTimeUs = 0, nrGpuUs = 0, reconstructionGpuUs = 0, fgGpuUs = 0,
-             vramBytes = 0;
+             vramBytes = 0, vsrGpuUs = 0;
     SharedSlot resources[SlotCount];
     char message[472] = {};
 };
@@ -128,6 +133,8 @@ inline NrPassConfig passConfig(const Command &c, unsigned pass)
         result.fsr = (c.flags & Fsr) ? 1u : 0u; result.tuning = c.nrTuning; return result; }
     return c.additionalPasses[pass - 1];
 }
+inline Extent inputExtent(const Command &c)
+{ return c.inputWidth && c.inputHeight ? Extent{c.inputWidth, c.inputHeight} : Extent{c.width, c.height}; }
 inline bool validPass(const NrPassConfig &p)
 { return p.percent >= 50 && p.percent <= 100 && p.sharpness <= 100 && p.fsr <= 1 && validTuning(p.tuning); }
 inline bool sameNrResources(const Command &a, const Command &b)
@@ -144,14 +151,16 @@ inline bool valid(const Command &c)
            c.operation >= Operation::Configure && c.operation <= Operation::Shutdown &&
            c.percent >= 50 && c.percent <= 100 && c.sharpness <= 100 &&
            c.fgMultiplier >= 2 && c.fgMultiplier <= MaxGeneratedFrames + 1 &&
+           c.vsrQuality <= 4 && (!(c.flags & Vsr) || c.vsrQuality > 0) &&
+           ((!c.inputWidth && !c.inputHeight) || (c.inputWidth && c.inputHeight && c.inputWidth <= c.width && c.inputHeight <= c.height)) &&
            c.nrPassCount >= 1 && c.nrPassCount <= MaxNrPasses &&
            validTuning(c.nrTuning) && validPass(c.additionalPasses[0]) && validPass(c.additionalPasses[1]) &&
-           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear)) &&
+           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear | Vsr)) &&
            (c.operation == Operation::Shutdown ||
             (c.width && c.height && c.width <= 16384 && c.height <= 16384)) &&
            (c.operation != Operation::Process || (c.slot < SlotCount && (c.fenceValue & 1)));
 }
-static_assert(sizeof(Command) == 192, "IPC command ABI changed");
-static_assert(sizeof(Reply) == 736, "IPC reply ABI changed");
+static_assert(sizeof(Command) == 200, "IPC command ABI changed");
+static_assert(sizeof(Reply) == 744, "IPC reply ABI changed");
 static_assert(std::is_trivially_copyable<Command>::value, "IPC must be POD");
 } // namespace chiaki_enhancement

@@ -9,7 +9,7 @@ ScrollView {
     id: view
     objectName: "rendererSettingsView"
     property bool compact: false
-    readonly property Item firstControl: nrToggle.enabled ? nrToggle : gameplayStats
+    readonly property Item firstControl: nrToggle.enabled ? nrToggle : vsrQualityControl
     property bool horizontalBar: false
     property Item previousFocusItem
     property Item nextFocusItem
@@ -96,7 +96,7 @@ ScrollView {
             Layout.margins: view.compact ? 4 : 16
             wrapMode: Text.WordWrap
             visible: !view.compact
-            text: qsTr("Experimental Windows enhancements · SDR and HDR NR")
+            text: qsTr("Picture enhancement → scaling → frame generation")
         }
         GridLayout {
             Layout.alignment: view.horizontalBar ? Qt.AlignLeft | Qt.AlignTop : Qt.AlignHCenter
@@ -123,6 +123,23 @@ ScrollView {
                     enabled: Chiaki.window.enhancementNeuralAvailable
                     checked: Chiaki.settings.enhancementNeural && Chiaki.window.enhancementNeuralAvailable
                     onToggled: Chiaki.settings.enhancementNeural = checked
+                }
+            }
+            GridLayout {
+                columns: view.horizontalBar ? 1 : 2
+                Layout.alignment: Qt.AlignTop
+                rowSpacing: 0
+                Label { Layout.preferredWidth: view.horizontalBar ? -1 : 190; text: "NVIDIA VSR" }
+                C.ComboBox {
+                    id: vsrQualityControl
+                    objectName: "vsrQuality"
+                    navigationScope: view.horizontalBar ? view : null
+                    Layout.preferredHeight: view.horizontalBar ? 32 : -1
+                    model: [qsTr("Off"), qsTr("Low"), qsTr("Medium"), qsTr("High"), qsTr("Ultra")]
+                    currentIndex: Chiaki.settings.enhancementVsrQuality
+                    onActivated: index => Chiaki.settings.enhancementVsrQuality = index
+                    ToolTip.visible: hovered || activeFocus
+                    ToolTip.text: qsTr("AI video super resolution for SDR. Requires nvngx_vsr.dll in runtimes/. VSR replaces FSR/FSRCNNX after confirmation; NR and frame generation can remain enabled.")
                 }
             }
             GridLayout {
@@ -485,6 +502,14 @@ ScrollView {
                     onActivated: index => Chiaki.settings.enhancementFrameGenerationMultiplier = index + 2
                 }
             }
+        }
+        Label {
+            objectName: "enhancementPipelineHelp"
+            Layout.fillWidth: true
+            Layout.margins: view.compact ? 4 : 16
+            wrapMode: Text.WordWrap
+            visible: !view.horizontalBar
+            text: qsTr("NR changes image appearance. VSR and FSR/FSRCNNX reconstruct resolution; choose one. Frame generation increases output cadence. Confirming an overlap replaces the previous feature and preserves unrelated settings.")
         }
         Label {
             id: smoothMotionInstructions

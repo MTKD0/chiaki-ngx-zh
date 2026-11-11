@@ -174,14 +174,24 @@ public:
         valueFont.setPixelSize(18);
         valueFont.setBold(true);
 
-        fpsRow = makeRow(tr("FPS"), QColor(QStringLiteral("#a5d6a7")), titleFont, valueFont, fpsValue);
+        fpsRow = makeRow(tr("Submitted FPS"), QColor(QStringLiteral("#a5d6a7")), titleFont, valueFont, fpsValue);
         connect(owner, &QmlMainWindow::gameplayStatsChanged, this, &StatsOverlayWidget::refresh);
+        latencyRow = makeRow(tr("Picture latency (estimate)"), QColor(QStringLiteral("#ffe082")), titleFont, valueFont, latencyValue);
+        latencyValue->setToolTip(tr("Network is half the connection-time RTT probe. NR includes reconstruction; FG includes optical flow and a maximum phase-wait estimate. Excludes console encode, decode, display scanout and external Smooth Motion."));
         bitrateRow = makeRow(tr("Mbps"), QColor(QStringLiteral("#00a7ff")), titleFont, valueFont, bitrateValue);
         queueRow = makeRow(tr("queue depth avg"), QColor(QStringLiteral("#90caf9")), titleFont, valueFont, queueDepthValue);
         pendingRow = makeRow(tr("pending frame age"), QColor(QStringLiteral("#90caf9")), titleFont, valueFont, pendingAgeValue);
         packetLossRow = makeRow(tr("packet loss"), QColor(QStringLiteral("#ef9a9a")), titleFont, valueFont, packetLossValue);
         droppedFramesRow = makeRow(tr("dropped frames"), QColor(QStringLiteral("#ef9a9a")), titleFont, valueFont, droppedFramesValue);
         lostFramesRow = makeRow(tr("lost frames"), QColor(QStringLiteral("#ef9a9a")), titleFont, valueFont, lostFramesValue);
+        auto *latencyNote = new QLabel(tr("Network ≈ connection RTT/2; FG includes a phase-wait upper bound. Excludes console encode, decode, screen and external Smooth Motion timing."), panel);
+        latencyNote->setWordWrap(true);
+        latencyNote->setMaximumWidth(460);
+        QFont noteFont = titleFont;
+        noteFont.setPixelSize(12);
+        latencyNote->setFont(noteFont);
+        latencyNote->setStyleSheet(QStringLiteral("color: #b0bec5;"));
+        panelLayout->addWidget(latencyNote);
 
         outer->addWidget(panel, 0, Qt::AlignRight | Qt::AlignVCenter);
 
@@ -251,6 +261,7 @@ public:
     void refresh()
     {
         fpsValue->setText(owner ? owner->gameplayFps() : QStringLiteral("0.0"));
+        latencyValue->setText(owner ? owner->gameplayLatency() : QStringLiteral("—"));
         StreamSession *session = current_session;
         const bool hasSession = session != nullptr;
 
@@ -288,6 +299,8 @@ private:
     QPointer<QmlMainWindow> owner;
     QPointer<QmlBackend> backend;
     QPointer<StreamSession> current_session;
+    QWidget *latencyRow = nullptr;
+    QLabel *latencyValue = nullptr;
     QWidget *fpsRow = nullptr;
     QLabel *fpsValue = nullptr;
     QWidget *bitrateRow = nullptr;
@@ -5151,6 +5164,8 @@ renderer_backend_ready:
         enhancement_neural_failure.clear();
         enhancement_cadence = tr("No enhanced frames presented");
         gameplay_fps = QStringLiteral("0.0");
+        enhancement_nr_ms = enhancement_reconstruction_ms = enhancement_fg_ms = enhancement_vsr_ms = enhancement_flow_ms = enhancement_wait_ms = 0;
+        enhancement_vsr_active = false;
         emit gameplayStatsChanged();
         emit enhancementStatusChanged();
         updateEnhancementSettings();
@@ -6955,6 +6970,14 @@ void QmlMainWindow::render()
                     QMetaObject::invokeMethod(quick_item, "showEnhancementWarning",
                         Q_ARG(QVariant, QVariant(reason)));
             }, Qt::QueuedConnection);
+        connect(enhancement_pipeline, &EnhancementPipeline::timingsChanged, this,
+            [this](double nr, double reconstruction, double fg, double vsr, double flow, double wait, bool vsrActive) {
+                if (!stream_session_active.loadAcquire()) return;
+                enhancement_nr_ms = nr; enhancement_reconstruction_ms = reconstruction;
+                enhancement_fg_ms = fg; enhancement_vsr_ms = vsr; enhancement_flow_ms = flow;
+                enhancement_wait_ms = wait; enhancement_vsr_active = vsrActive;
+                emit gameplayStatsChanged();
+            }, Qt::QueuedConnection);
         connect(enhancement_pipeline, &EnhancementPipeline::cadenceChanged, this,
             [this](const QString &text) {
                 if (!stream_session_active.loadAcquire()) return;
@@ -6997,7 +7020,17 @@ void QmlMainWindow::render()
         enhancement_native.height = static_cast<uint32_t>(qMax(1.0f, qMin(enhancement_height, float(swapchain_size.height()))));
         // A frame gap must not reconfigure an HDR worker as SDR or discard held output.
         if (hint_frame)
-            enhancement_pipeline->prepare(placebo_vulkan, enhancement_native, enhancement_options, hint_frame->color);
+        {
+            auto frameOptions = enhancement_options;
+            if (frameOptions.vsrQuality && !pl_color_space_is_hdr(&hint_frame->color)) {
+                // Preserve source pixels until VSR: do not bilinearly upscale the input prepass.
+                const float visibleFractionX = enhancement_width / std::max(1.0f, fabsf(pl_rect_w(enhancement_layout.crop)));
+                const float visibleFractionY = enhancement_height / std::max(1.0f, fabsf(pl_rect_h(enhancement_layout.crop)));
+                frameOptions.inputWidth = qBound(1u, unsigned(qMax(1.0f, roundf(fabsf(pl_rect_w(hint_frame->crop)) * visibleFractionX))), enhancement_native.width);
+                frameOptions.inputHeight = qBound(1u, unsigned(qMax(1.0f, roundf(fabsf(pl_rect_h(hint_frame->crop)) * visibleFractionY))), enhancement_native.height);
+            }
+            enhancement_pipeline->prepare(placebo_vulkan, enhancement_native, frameOptions, hint_frame->color);
+        }
         enhancement_pipeline->setSourceInterval(uint64_t(qMax(0.0, stream_interval_s) * 1000000.0));
         if (hint_frame) {
             uint64_t signature = enhancement_direct_signature;
@@ -7018,7 +7051,7 @@ void QmlMainWindow::render()
                 for (int n = 0; n < 4; ++n) native_target.planes[0].component_mapping[n] = n;
                 native_target.repr = pl_color_repr_rgb;
                 native_target.color = enhancement_pipeline->inputColor();
-                native_target.crop = {0, 0, float(enhancement_native.width), float(enhancement_native.height)};
+                native_target.crop = {0, 0, float(input->params.w), float(input->params.h)};
                 pl_frame source = *hint_frame; source.overlays = nullptr; source.num_overlays = 0;
                 const auto crop = source.crop;
                 const float sx = pl_rect_w(crop) / pl_rect_w(enhancement_layout.crop);
@@ -7031,6 +7064,15 @@ void QmlMainWindow::render()
                 };
                 pl_render_params prepare_params = pl_render_default_params;
                 prepare_params.upscaler = &pl_filter_bilinear;
+                // A confirmed spatial scaler must also run when NR/FG owns the
+                // final output. VSR instead receives original-resolution pixels.
+                const pl_hook *prepareHook = nullptr;
+                if (!enhancement_options.vsrQuality && !(enhancement_options.neural && enhancement_options.fsr)) {
+                    const float scale = std::min(float(input->params.w) / std::max(1.0f, fabsf(pl_rect_w(source.crop))),
+                                                 float(input->params.h) / std::max(1.0f, fabsf(pl_rect_h(source.crop))));
+                    prepareHook = select_spatial_hook(video_preset, configured_upscaler, scale, fsr_hook, fsrcnnx_hook_8, fsrcnnx_hook_16);
+                    if (prepareHook) { prepare_params.hooks = &prepareHook; prepare_params.num_hooks = 1; }
+                }
                 if (pl_render_image(placebo_renderer, &source, &native_target, &prepare_params))
                     enhancement_pipeline->submitFrame();
                 else
@@ -7788,7 +7830,7 @@ void QmlMainWindow::render()
     if (!bypass_frame_queue && frame_mix.signatures && hint_frame)
         for (int n=0;n<frame_mix.num_frames;++n)
             if (frame_mix.frames[n] == hint_frame) { statsKey=frame_mix.signatures[n]+1; break; }
-    if (enhanced_output) statsKey = enhancement_pipeline->completedFrameId() | (uint64_t(1)<<63);
+    if (enhanced_output) statsKey = chiaki_enhancement::presentationKey(enhancement_pipeline->completedFrameId(), enhancement_pipeline->outputPhase());
     const bool generatedPhase = enhanced_output && enhancement_pipeline->generatedOutput();
     if (close_started_frame(true)) {
         recordGameplayPresentation(generatedPhase, statsKey);
@@ -8000,12 +8042,16 @@ void QmlMainWindow::updateEnhancementSettings()
     EnhancementOptions options;
     options.neural = settings->GetEnhancementNeural() && enhancement_neural_available;
     options.percent = settings->GetEnhancementPercent();
-    options.fsr = settings->GetEnhancementFsr();
+    options.vsrQuality = unsigned(settings->GetEnhancementVsrQuality());
+    options.fsr = settings->GetEnhancementFsr() && !options.vsrQuality;
     options.sharpness = settings->GetEnhancementSharpness();
     options.nrPassCount = unsigned(settings->GetEnhancementPassCount());
     options.nrTuning = settings->GetEnhancementPassTuning(0);
     for (unsigned pass = 1; pass < options.nrPassCount; ++pass)
+    {
         options.additionalPasses[pass - 1] = settings->GetEnhancementEffectivePassConfig(int(pass));
+        if (options.vsrQuality) options.additionalPasses[pass - 1].fsr = 0;
+    }
     options.frameGeneration = settings->GetEnhancementFrameGeneration();
     options.fgMultiplier = options.frameGeneration ? unsigned(settings->GetEnhancementFrameGenerationMultiplier()) : 2;
     QMetaObject::invokeMethod(quick_render, [this, options]() {
@@ -8022,6 +8068,20 @@ QString QmlMainWindow::enhancementCadence() const
         .arg(settings && settings->GetVSyncEnabled() ? tr("On") : tr("Off"))
         .arg(settings && settings->GetVSyncEnabled() && hz <= 60.5 && settings->GetEnhancementFrameGeneration()
             ? tr(" — display caps visible cadence") : QString());
+}
+
+QString QmlMainWindow::gameplayLatency() const
+{
+    const double network = session ? session->GetNetworkOneWayMs() : -1.0;
+    const bool measuredFg = enhancement_fg_ms > 0;
+    const double nr = enhancement_nr_ms + enhancement_reconstruction_ms + (measuredFg ? 0 : enhancement_flow_ms);
+    const double fg = measuredFg ? enhancement_fg_ms + enhancement_flow_ms + enhancement_wait_ms : 0;
+    const QString external = settings && settings->GetEnhancementFrameGenerationEnabled() && settings->GetEnhancementFrameGenerationBackend() == 2
+        ? tr("\nSmooth Motion: external timing unavailable") : QString();
+    const QString sum = network >= 0 ? tr("≈%1 ms").arg(network + nr + fg + enhancement_vsr_ms, 0, 'f', 1) : tr("unknown");
+    return tr("Network %1 + NR %2 + FG %3 + VSR %4\n= %5%6")
+        .arg(network >= 0 ? tr("≈%1").arg(network, 0, 'f', 1) : tr("unknown"))
+        .arg(nr, 0, 'f', 1).arg(fg, 0, 'f', 1).arg(enhancement_vsr_ms, 0, 'f', 1).arg(sum, external);
 }
 
 void QmlMainWindow::requestScreenshot()

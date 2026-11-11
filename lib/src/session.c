@@ -632,8 +632,10 @@ ctrl_failed:
 		QUIT(quit_ctrl);
 	}
 
-	if(err == CHIAKI_ERR_SUCCESS)
+	if(err == CHIAKI_ERR_SUCCESS) {
+        session->rtt_valid = session->rtt_us > 0;
 		CHIAKI_LOGI(session->log, "Senkusha completed successfully");
+    }
 	else if(err == CHIAKI_ERR_CANCELED)
 		QUIT(quit_ctrl);
 	else

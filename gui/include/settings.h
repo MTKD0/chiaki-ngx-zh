@@ -446,6 +446,8 @@ class Settings : public QObject
             settings.setValue("enhancement/customize_passes", value);
         }
         bool GetEnhancementFrameGenerationEnabled() const { return settings.value("enhancement/frame_generation", false).toBool(); }
+        int GetEnhancementVsrQuality() const { return qBound(0, settings.value("enhancement/vsr_quality", 0).toInt(), 4); }
+        void SetEnhancementVsrQuality(int value) { settings.setValue("enhancement/vsr_quality", qBound(0, value, 4)); }
         // 1 = in-app DLSS FG; 2 = externally enabled NVIDIA Smooth Motion.
         int GetEnhancementFrameGenerationBackend() const { return qBound(1, settings.value("enhancement/fg_backend", 1).toInt(), 2); }
         void SetEnhancementFrameGenerationBackend(int value) { settings.setValue("enhancement/fg_backend", qBound(1, value, 2)); }

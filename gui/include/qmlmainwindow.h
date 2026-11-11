@@ -63,6 +63,7 @@ class QmlMainWindow : public QWindow
     Q_PROPERTY(bool enhancementNeuralAvailable READ enhancementNeuralAvailable NOTIFY enhancementStatusChanged)
     Q_PROPERTY(QString enhancementCadence READ enhancementCadence NOTIFY enhancementStatusChanged)
     Q_PROPERTY(QString gameplayFps READ gameplayFps NOTIFY gameplayStatsChanged)
+    Q_PROPERTY(QString gameplayLatency READ gameplayLatency NOTIFY gameplayStatsChanged)
     Q_PROPERTY(QString enhancementDimensions READ enhancementDimensions NOTIFY enhancementStatusChanged)
     Q_PROPERTY(bool enhancementUpscalingEligible READ enhancementUpscalingEligible NOTIFY enhancementStatusChanged)
     Q_PROPERTY(bool enhancementNrActive READ enhancementNrActive NOTIFY enhancementStatusChanged)
@@ -127,6 +128,7 @@ public:
     bool enhancementApplying() const { return enhancement_applying; }
     QString enhancementCadence() const;
     QString gameplayFps() const { return gameplay_fps; }
+    QString gameplayLatency() const;
     Q_INVOKABLE void requestScreenshot();
     QString enhancementDimensions() const { return enhancement_dimensions; }
     bool enhancementUpscalingEligible() const { return enhancement_upscaling_eligible; }
@@ -221,6 +223,9 @@ private:
     QAtomicInteger<int> enhancement_history_reset_requested = 0;
     QAtomicInteger<int> screenshot_requested = 0;
     QString gameplay_fps = QStringLiteral("0.0");
+    double enhancement_nr_ms = 0, enhancement_reconstruction_ms = 0, enhancement_fg_ms = 0,
+        enhancement_vsr_ms = 0, enhancement_flow_ms = 0, enhancement_wait_ms = 0;
+    bool enhancement_vsr_active = false;
     uint64_t gameplay_stats_since = 0, gameplay_last_real = 0, gameplay_last_fg = 0;
     uint64_t gameplay_real_count = 0, gameplay_fg_count = 0;
     void recordGameplayPresentation(bool generated, uint64_t frameKey);

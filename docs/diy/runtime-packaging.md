@@ -72,3 +72,7 @@ For NR support, stage a compatible NR reference first with `Install-EnhancementR
 Add `-ArchivePath <release.zip>` only when a ZIP is requested. The packaging helper does not build the GUI or download third-party dependencies. Existing GitHub Actions workflows have not been changed to run it automatically. All DLLs and release archives remain ignored by Git; they belong in release artifacts, not source commits.
 
 See [enhancement diagnostics](enhancements.md#bug-reports) for logs to attach to bug reports.
+
+## Optional NVIDIA VSR
+
+VSR is user supplied alongside NR and is excluded by the packaging script. The local test build uses NVIDIA-signed 1.6.0.0, pinned independently from the FG/NR manifest. See [VSR and statistics](vsr-and-statistics.md) for identity, provenance and test limits.

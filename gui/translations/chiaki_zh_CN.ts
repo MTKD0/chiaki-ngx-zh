@@ -27,7 +27,7 @@
 <context>
     <name>ConfirmDialog</name>
     <message>
-        <location filename="../src/qml/ConfirmDialog.qml" line="+62"/>
+        <location filename="../src/qml/ConfirmDialog.qml" line="+64"/>
         <source>Yes</source>
         <translation>是</translation>
     </message>
@@ -343,7 +343,7 @@ Totals: %4 real · %5 generated</source>
 累计：%4 真实帧 · %5 生成帧</translation>
     </message>
     <message>
-        <location line="+59"/>
+        <location line="+60"/>
         <source>Enhancement worker timed out; ordinary playback restored</source>
         <translation>增强进程超时，已恢复普通播放</translation>
     </message>
@@ -358,17 +358,17 @@ Totals: %4 real · %5 generated</source>
         <translation>增强进程已退出，已恢复普通播放</translation>
     </message>
     <message>
-        <location line="+18"/>
+        <location line="+19"/>
         <source>Enhancement IPC write failed</source>
         <translation>增强进程通信写入失败</translation>
     </message>
     <message>
-        <location line="+40"/>
+        <location line="+41"/>
         <source>No enhanced frames presented</source>
         <translation>尚未显示增强后的画面</translation>
     </message>
     <message>
-        <location line="+277"/>
+        <location line="+278"/>
         <source>Enhancements require Windows x64</source>
         <translation>增强功能需要 Windows x64</translation>
     </message>
@@ -393,7 +393,7 @@ Totals: %4 real · %5 generated</source>
         <translation>未安装增强进程（enhancement/nvngx.dll）</translation>
     </message>
     <message>
-        <location line="+56"/>
+        <location line="+61"/>
         <source>Starting enhancement worker…</source>
         <translation>正在启动增强进程…</translation>
     </message>
@@ -403,12 +403,12 @@ Totals: %4 real · %5 generated</source>
         <translation>增强进程协议版本不兼容</translation>
     </message>
     <message>
-        <location line="+6"/>
+        <location line="+8"/>
         <source>DLSS FG returned an invalid generated frame count</source>
         <translation>DLSS FG 返回的生成帧数量无效</translation>
     </message>
     <message>
-        <location line="+12"/>
+        <location line="+10"/>
         <source>Enhancement worker returned a stale configuration</source>
         <translation>增强进程返回了过期配置</translation>
     </message>
@@ -418,7 +418,7 @@ Totals: %4 real · %5 generated</source>
         <translation>Vulkan 无法导入 D3D12 共享资源</translation>
     </message>
     <message>
-        <location line="+21"/>
+        <location line="+22"/>
         <source>Enhancement protocol error: expected frame %1 slot %2 fence %3, received frame %4 slot %5 fence %6; ordinary playback restored, controls remain available</source>
         <translation>增强协议错误：预期帧 %1、槽位 %2、栅栏 %3，收到帧 %4、槽位 %5、栅栏 %6；已恢复普通播放，控制项仍可使用</translation>
     </message>
@@ -428,7 +428,7 @@ Totals: %4 real · %5 generated</source>
         <translation>输出资源所有权移交失败</translation>
     </message>
     <message>
-        <location line="+47"/>
+        <location line="+53"/>
         <source>; FG presentation skipped to preserve real FPS</source>
         <translation>；为保持真实帧率，已跳过生成帧显示</translation>
     </message>
@@ -438,8 +438,8 @@ Totals: %4 real · %5 generated</source>
         <translation>增强进程返回了未知响应</translation>
     </message>
     <message>
-        <location line="+19"/>
-        <location line="+56"/>
+        <location line="+20"/>
+        <location line="+58"/>
         <source>Off</source>
         <translation>关闭</translation>
     </message>
@@ -478,6 +478,16 @@ Totals: %4 real · %5 generated</source>
     <name>EnhancementRuntime</name>
     <message>
         <location filename="../enhancement/runtime_manifest.h" line="+21"/>
+        <source>VSR runtime is missing. Copy NVIDIA RTX Video SDK nvngx_vsr.dll 1.6.0.0 into runtimes/ and restart the stream.</source>
+        <translation>缺少 VSR 运行库。请将 NVIDIA RTX Video SDK 的 nvngx_vsr.dll 1.6.0.0 放入 runtimes/，然后重新开始串流。</translation>
+    </message>
+    <message>
+        <location line="+2"/>
+        <source>VSR runtime does not match the tested NVIDIA 1.6.0.0 release; ordinary scaling retained.</source>
+        <translation>VSR 运行库与已验证的 NVIDIA 1.6.0.0 版本不匹配，已保留普通缩放。</translation>
+    </message>
+    <message>
+        <location line="+9"/>
         <source>Optional runtime package is missing; see the release README for runtimes/</source>
         <translation>缺少可选运行库，请参照发布说明检查 runtimes/ 目录</translation>
     </message>
@@ -542,18 +552,13 @@ Totals: %4 real · %5 generated</source>
         <translation>↺</translation>
     </message>
     <message>
-        <location line="+24"/>
-        <source>Experimental Windows enhancements · SDR and HDR NR</source>
-        <translation>Windows 实验性增强 · SDR/HDR 神经渲染</translation>
-    </message>
-    <message>
-        <location line="+14"/>
+        <location line="+38"/>
         <source>Neural Rendering</source>
         <translation>神经渲染（DLSS 5）</translation>
     </message>
     <message>
         <location line="+9"/>
-        <location line="+177"/>
+        <location line="+194"/>
         <location line="+148"/>
         <source>Enable</source>
         <translation>启用</translation>
@@ -679,15 +684,46 @@ Totals: %4 real · %5 generated</source>
         <translation>关闭 NR 皮肤结构调整</translation>
     </message>
     <message>
-        <location line="+3"/>
-        <location line="+215"/>
+        <location line="-204"/>
+        <location line="+207"/>
+        <location line="+223"/>
         <location line="+1"/>
         <location line="+1"/>
         <source>Off</source>
         <translation>关闭</translation>
     </message>
     <message>
-        <location line="-209"/>
+        <location line="-471"/>
+        <source>Picture enhancement → scaling → frame generation</source>
+        <translation>画面增强 → 超分重建 → 帧生成</translation>
+    </message>
+    <message>
+        <location line="+39"/>
+        <source>Low</source>
+        <translation>低</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Medium</source>
+        <translation>中</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>High</source>
+        <translation>高</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Ultra</source>
+        <translation>极高</translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>AI video super resolution for SDR. Requires nvngx_vsr.dll in runtimes/. VSR replaces FSR/FSRCNNX after confirmation; NR and frame generation can remain enabled.</source>
+        <translation>SDR 视频 AI 超分，需要 runtimes/ 中的 nvngx_vsr.dll。确认后，VSR 会替换 FSR/FSRCNNX；NR 和帧生成可以继续使用。</translation>
+    </message>
+    <message>
+        <location line="+211"/>
         <source>Skin Structure requires Automatic Mask</source>
         <translation>皮肤结构调整需要启用自动蒙版</translation>
     </message>
@@ -757,7 +793,12 @@ Totals: %4 real · %5 generated</source>
         <translation>插帧倍数</translation>
     </message>
     <message>
-        <location line="+19"/>
+        <location line="+18"/>
+        <source>NR changes image appearance. VSR and FSR/FSRCNNX reconstruct resolution; choose one. Frame generation increases output cadence. Confirming an overlap replaces the previous feature and preserves unrelated settings.</source>
+        <translation>NR 用于画面增强；VSR 与 FSR/FSRCNNX 用于超分重建，请选择一种；帧生成用于提高输出帧率。同类功能切换经确认后替换原功能，保留其他设置。</translation>
+    </message>
+    <message>
+        <location line="+9"/>
         <source>smooth motion is driver-based 2x frame generation. In NVIDIA App, open Graphics &gt; Program settings, add the main program below and enable Smooth Motion, then restart Chiaki. Selecting this method disables in-app DLSS FG; NVIDIA App activation cannot be verified here. Requires a compatible RTX 40/50 GPU, driver and Vulkan renderer. App FPS does not include driver-generated frames.</source>
         <translation>smooth motion 由驱动实现 2x 插帧。请在 NVIDIA App 的“图形 → 程序设置”中添加下方主程序，开启 Smooth Motion，再重新启动 Chiaki。选择此方式会停用应用内的 DLSS FG；本程序无法确认 NVIDIA App 中是否已启用。需要兼容的 RTX 40/50 显卡、驱动和 Vulkan 渲染器。应用内帧率不包含驱动生成帧。</translation>
     </message>
@@ -990,7 +1031,22 @@ Totals: %4 real · %5 generated</source>
 <context>
     <name>Main</name>
     <message>
-        <location filename="../src/qml/Main.qml" line="+186"/>
+        <location filename="../src/qml/Main.qml" line="+21"/>
+        <source>Overlapping features</source>
+        <translation>同类功能确认</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>You have enabled %1. It serves the same purpose as %2. Apply %2 and replace the overlapping feature?</source>
+        <translation>您已启用 %1，此功能与 %2 功能目的相同，是否确认套用 %2 并替换原功能？</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Also turn Smooth Motion off in NVIDIA App; this app cannot change driver settings.</source>
+        <translation>还需在 NVIDIA App 中关闭 Smooth Motion，本程序无法修改驱动设置。</translation>
+    </message>
+    <message>
+        <location line="+172"/>
         <source>Screenshot saved</source>
         <translation>截图已保存</translation>
     </message>
@@ -2600,7 +2656,7 @@ This enables:
 <context>
     <name>QmlBackend</name>
     <message>
-        <location filename="../src/qmlbackend.cpp" line="+425"/>
+        <location filename="../src/qmlbackend.cpp" line="+428"/>
         <location line="+255"/>
         <source>Remote Play session</source>
         <translation>远程游玩会话</translation>
@@ -2682,32 +2738,32 @@ This enables:
 <context>
     <name>QmlMainWindow</name>
     <message>
-        <location filename="../src/qmlmainwindow.cpp" line="+5152"/>
-        <location filename="../include/qmlmainwindow.h" line="+233"/>
+        <location filename="../src/qmlmainwindow.cpp" line="+5165"/>
+        <location filename="../include/qmlmainwindow.h" line="+238"/>
         <source>No enhanced frames presented</source>
         <translation>尚未显示增强后的画面</translation>
     </message>
     <message>
-        <location line="+25"/>
+        <location line="+27"/>
         <location filename="../include/qmlmainwindow.h" line="-6"/>
         <source>Inactive — not streaming</source>
         <translation>未启用——当前未串流</translation>
     </message>
     <message>
         <location line="+1"/>
-        <location line="+1797"/>
+        <location line="+1805"/>
         <location filename="../include/qmlmainwindow.h" line="+1"/>
         <source>Video dimensions available during streaming</source>
         <translation>开始串流后显示视频尺寸</translation>
     </message>
     <message>
-        <location line="-984"/>
-        <location line="+1113"/>
+        <location line="-992"/>
+        <location line="+1140"/>
         <source>Vulkan renderer stalled</source>
         <translation>Vulkan 渲染器停滞</translation>
     </message>
     <message>
-        <location line="-1112"/>
+        <location line="-1139"/>
         <source>The Vulkan surface could not recover. Chiaki-ngx will relaunch with OpenGL for this run only.</source>
         <translation>Vulkan 显示表面无法恢复，Chiaki-ngx 将重新启动，本次改用 OpenGL。</translation>
     </message>
@@ -2736,12 +2792,12 @@ Reason: %1</source>
         <translation>Vulkan 设备丢失，本次启动改用 OpenGL。原因：%1</translation>
     </message>
     <message>
-        <location line="+593"/>
+        <location line="+601"/>
         <source>Native %1×%2 · NR %3×%4 (%5% requested)</source>
         <translation>原始 %1×%2 · NR %3×%4（请求 %5%）</translation>
     </message>
     <message>
-        <location line="+132"/>
+        <location line="+151"/>
         <source>The Vulkan swapchain could not recover. Chiaki-ngx will relaunch with OpenGL for this run only.</source>
         <translation>Vulkan 交换链无法恢复，Chiaki-ngx 将重新启动，本次改用 OpenGL。</translation>
     </message>
@@ -2751,7 +2807,7 @@ Reason: %1</source>
         <translation>窗口可见时 Vulkan 交换链反复失败，本次启动改用 OpenGL。</translation>
     </message>
     <message>
-        <location line="+914"/>
+        <location line="+918"/>
         <source>%1
 Display %2 Hz · VSync %3%4</source>
         <translation>%1
@@ -2773,14 +2829,44 @@ Display %2 Hz · VSync %3%4</source>
         <translation> ——可见帧率受显示器限制</translation>
     </message>
     <message>
-        <location line="+28"/>
+        <location line="+10"/>
+        <source>
+Smooth Motion: external timing unavailable</source>
+        <translation>
+Smooth Motion：无法测量驱动额外耗时</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>≈%1 ms</source>
+        <translation>≈%1 ms</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <location line="+2"/>
+        <source>unknown</source>
+        <translation>未知</translation>
+    </message>
+    <message>
+        <location line="-1"/>
+        <source>Network %1 + NR %2 + FG %3 + VSR %4
+= %5%6</source>
+        <translation>网络 %1 + NR %2 + 插帧 %3 + VSR %4
+= %5%6</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>≈%1</source>
+        <translation>≈%1</translation>
+    </message>
+    <message>
+        <location line="+29"/>
         <source>%1 total
 Real %2 / FG %3</source>
         <translation>总计 %1
 真实帧 %2 / 生成帧 %3</translation>
     </message>
     <message>
-        <location filename="../include/qmlmainwindow.h" line="-103"/>
+        <location filename="../include/qmlmainwindow.h" line="-107"/>
         <source>DLSS5 disabled: %1
 %2</source>
         <translation>DLSS 5 已禁用：%1
@@ -2790,7 +2876,7 @@ Real %2 / FG %3</source>
 <context>
     <name>QmlSettings</name>
     <message>
-        <location filename="../src/qmlsettings.cpp" line="+2082"/>
+        <location filename="../src/qmlsettings.cpp" line="+2080"/>
         <source>Export %1 Profile To File</source>
         <translation>导出 %1 配置到文件</translation>
     </message>
@@ -3167,12 +3253,12 @@ This enables:
     </message>
     <message>
         <location line="+30"/>
-        <location line="+816"/>
+        <location line="+809"/>
         <source>Remote</source>
         <translation>远程连接</translation>
     </message>
     <message>
-        <location line="-786"/>
+        <location line="-779"/>
         <source>Config</source>
         <translation>配置</translation>
     </message>
@@ -3239,7 +3325,7 @@ This enables:
         <location line="+67"/>
         <location line="+285"/>
         <location line="+33"/>
-        <location line="+109"/>
+        <location line="+102"/>
         <location line="+658"/>
         <location line="+18"/>
         <location line="+134"/>
@@ -3250,7 +3336,7 @@ This enables:
         <translation>（未勾选）</translation>
     </message>
     <message>
-        <location line="-2428"/>
+        <location line="-2421"/>
         <source>Steam Deck Vertical:</source>
         <translation>Steam Deck 竖屏：</translation>
     </message>
@@ -3301,14 +3387,14 @@ This enables:
     </message>
     <message>
         <location line="+17"/>
-        <location line="+458"/>
+        <location line="+451"/>
         <location line="+15"/>
         <location line="+13"/>
         <source>Open</source>
         <translation>打开</translation>
     </message>
     <message>
-        <location line="-476"/>
+        <location line="-469"/>
         <source>Streamer Mode (Hides Info)</source>
         <translation>直播模式（隐藏信息）</translation>
     </message>
@@ -3320,13 +3406,13 @@ This enables:
     <message>
         <location line="+20"/>
         <location line="+274"/>
-        <location line="+1708"/>
+        <location line="+1701"/>
         <location line="+28"/>
         <source>(Checked)</source>
         <translation>（已勾选）</translation>
     </message>
     <message>
-        <location line="-2001"/>
+        <location line="-1994"/>
         <source>Stream Menu Combo:</source>
         <translation>串流菜单组合键：</translation>
     </message>
@@ -3335,7 +3421,7 @@ This enables:
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3343,11 +3429,11 @@ This enables:
         <translation>不使用</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3355,11 +3441,11 @@ This enables:
         <translation>叉键（×）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3367,11 +3453,11 @@ This enables:
         <translation>圆圈键（○）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3379,11 +3465,11 @@ This enables:
         <translation>方框键（□）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3391,11 +3477,11 @@ This enables:
         <translation>三角键（△）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3403,11 +3489,11 @@ This enables:
         <translation>方向键左</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3415,11 +3501,11 @@ This enables:
         <translation>方向键右</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3427,11 +3513,11 @@ This enables:
         <translation>方向键上</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3439,11 +3525,11 @@ This enables:
         <translation>方向键下</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3451,11 +3537,11 @@ This enables:
         <translation>L1</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3463,11 +3549,11 @@ This enables:
         <translation>R1</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3475,11 +3561,11 @@ This enables:
         <translation>L3</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3487,11 +3573,11 @@ This enables:
         <translation>R3</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3499,11 +3585,11 @@ This enables:
         <translation>Options（选项）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3511,11 +3597,11 @@ This enables:
         <translation>Share（分享）</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3523,11 +3609,11 @@ This enables:
         <translation>触摸板</translation>
     </message>
     <message>
-        <location line="-2111"/>
+        <location line="-2104"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
-        <location line="+1997"/>
+        <location line="+1990"/>
         <location line="+19"/>
         <location line="+19"/>
         <location line="+19"/>
@@ -3535,7 +3621,7 @@ This enables:
         <translation>PS</translation>
     </message>
     <message>
-        <location line="-2037"/>
+        <location line="-2030"/>
         <source>(L1+R1+L3+R3)</source>
         <translation>(L1+R1+L3+R3)</translation>
     </message>
@@ -3551,13 +3637,13 @@ This enables:
     </message>
     <message>
         <location line="+16"/>
-        <location line="+797"/>
+        <location line="+790"/>
         <location line="+24"/>
         <source>(Auto)</source>
         <translation>（自动）</translation>
     </message>
     <message>
-        <location line="-816"/>
+        <location line="-809"/>
         <source>Window Type:</source>
         <translation>窗口模式：</translation>
     </message>
@@ -3667,7 +3753,7 @@ This enables:
         <translation>自定义</translation>
     </message>
     <message>
-        <location line="+17"/>
+        <location line="+10"/>
         <source>(High Quality)</source>
         <translation>（高质量）</translation>
     </message>
@@ -4410,12 +4496,22 @@ Please use Steam to map controller or disable Steam Input for the controller bef
 <context>
     <name>StatsOverlayWidget</name>
     <message>
-        <location filename="../src/qmlmainwindow.cpp" line="-7875"/>
-        <source>FPS</source>
-        <translation>FPS</translation>
+        <location filename="../src/qmlmainwindow.cpp" line="-7935"/>
+        <source>Submitted FPS</source>
+        <translation>提交帧率</translation>
     </message>
     <message>
         <location line="+2"/>
+        <source>Picture latency (estimate)</source>
+        <translation>画面延迟（估算）</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Network is half the connection-time RTT probe. NR includes reconstruction; FG includes optical flow and a maximum phase-wait estimate. Excludes console encode, decode, display scanout and external Smooth Motion.</source>
+        <translation>网络采用连接时 RTT 的一半；NR 包括重建，插帧包括光流和排帧等待上界。不含主机编码、客户端解码、屏幕扫描及外部 Smooth Motion 耗时。</translation>
+    </message>
+    <message>
+        <location line="+1"/>
         <source>Mbps</source>
         <translation>Mbps</translation>
     </message>
@@ -4445,7 +4541,12 @@ Please use Steam to map controller or disable Steam Input for the controller bef
         <translation>丢失帧</translation>
     </message>
     <message>
-        <location line="+82"/>
+        <location line="+1"/>
+        <source>Network ≈ connection RTT/2; FG includes a phase-wait upper bound. Excludes console encode, decode, screen and external Smooth Motion timing.</source>
+        <translation>网络≈连接时 RTT/2；插帧含排帧等待上界。未计入主机编码、解码、屏幕及外部 Smooth Motion 耗时。</translation>
+    </message>
+    <message>
+        <location line="+90"/>
         <source>%1 ms</source>
         <translation>%1 毫秒</translation>
     </message>

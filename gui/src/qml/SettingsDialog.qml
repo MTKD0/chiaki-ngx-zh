@@ -954,14 +954,7 @@ DialogView {
                         currentIndex: Chiaki.settings.videoPreset
                         onActivated: (index) => {
                             Chiaki.settings.videoPreset = index;
-                            switch (index) {
-                            case 0: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.Fast; break;
-                            case 1: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.Default; break;
-                            case 2: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.HighQuality; break;
-                            case 3: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.HighQualitySpatial; break;
-                            case 4: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.HighQualityAdvancedSpatial; break;
-                            case 5: Chiaki.window.videoPreset = ChiakiWindow.VideoPreset.Custom; break;
-                            }
+
                         }
                     }
 

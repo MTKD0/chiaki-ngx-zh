@@ -1,4 +1,5 @@
 #include "qmlsettings.h"
+#include "enhancementchoices.h"
 #include "sessionlog.h"
 
 #include <QSet>
@@ -682,8 +683,7 @@ int QmlSettings::videoPreset() const
 
 void QmlSettings::setVideoPreset(int preset)
 {
-    settings->SetPlaceboPreset(static_cast<PlaceboPreset>(preset));
-    emit videoPresetChanged();
+    requestEnhancementChoice("preset", preset);
 }
 
 int QmlSettings::rendererBackend() const
@@ -954,9 +954,7 @@ int QmlSettings::placeboUpscaler() const
 }
 void QmlSettings::setPlaceboUpscaler(int upscaler)
 {
-    settings->SetPlaceboUpscaler(static_cast<PlaceboUpscaler>(upscaler));
-    emit placeboUpscalerChanged();
-    emit placeboChanged();
+    requestEnhancementChoice("upscaler", upscaler);
 }
 
 int QmlSettings::placeboPlaneUpscaler() const
@@ -2249,13 +2247,35 @@ void QmlSettings::commitEnhancementPercents()
     emit enhancementPercentPreviewChanged();
 }
 bool QmlSettings::enhancementFsr() const { return settings->GetEnhancementPassFsr(enhancement_editing_pass); }
-void QmlSettings::setEnhancementFsr(bool value) { settings->SetEnhancementPassFsr(enhancement_editing_pass, value); emit enhancementChanged(); }
+void QmlSettings::setEnhancementFsr(bool value) { requestEnhancementChoice("fsr", int(value)); }
 int QmlSettings::enhancementSharpness() const { return settings->GetEnhancementPassSharpness(enhancement_editing_pass); }
 void QmlSettings::setEnhancementSharpness(int value) { settings->SetEnhancementPassSharpness(enhancement_editing_pass, value); emit enhancementChanged(); }
 bool QmlSettings::enhancementFrameGeneration() const { return settings->GetEnhancementFrameGenerationEnabled(); }
 void QmlSettings::setEnhancementFrameGeneration(bool value) { settings->SetEnhancementFrameGeneration(value); emit enhancementChanged(); }
+int QmlSettings::enhancementVsrQuality() const { return settings->GetEnhancementVsrQuality(); }
+void QmlSettings::setEnhancementVsrQuality(int value) { requestEnhancementChoice("vsr", value); }
+QString QmlSettings::enhancementConflict(QString choice, int value) const
+{ return EnhancementChoices::conflicts(*settings, choice, value); }
+void QmlSettings::requestEnhancementChoice(QString choice, int value)
+{
+    const QString conflict = enhancementConflict(choice, value);
+    if (conflict.isEmpty()) { applyEnhancementChoice(choice, value); return; }
+    const QString requested = choice == "vsr" ? QStringLiteral("NVIDIA VSR")
+        : choice == "fgBackend" ? (value == 1 ? QStringLiteral("DLSS FG") : QStringLiteral("smooth motion"))
+        : choice == "fsr" ? QStringLiteral("FSR (NR)") : QStringLiteral("FSR / FSRCNNX");
+    // Restore the control binding while awaiting a decision; cancellation changes no settings.
+    emit enhancementChanged(); emit enhancementControlsChanged();
+    emit placeboUpscalerChanged(); emit videoPresetChanged();
+    emit enhancementConfirmationRequested(choice, value, conflict, requested);
+}
+void QmlSettings::applyEnhancementChoice(QString choice, int value)
+{
+    EnhancementChoices::apply(*settings, choice, value, enhancement_editing_pass);
+    emit enhancementChanged(); emit enhancementControlsChanged();
+    emit placeboUpscalerChanged(); emit videoPresetChanged(); emit placeboChanged();
+}
 int QmlSettings::enhancementFrameGenerationBackend() const { return settings->GetEnhancementFrameGenerationBackend(); }
-void QmlSettings::setEnhancementFrameGenerationBackend(int value) { settings->SetEnhancementFrameGenerationBackend(value); emit enhancementChanged(); }
+void QmlSettings::setEnhancementFrameGenerationBackend(int value) { requestEnhancementChoice("fgBackend", qBound(1, value, 2)); }
 int QmlSettings::enhancementFrameGenerationMultiplier() const { return settings->GetEnhancementFrameGenerationMultiplier(); }
 void QmlSettings::setEnhancementFrameGenerationMultiplier(int value) { settings->SetEnhancementFrameGenerationMultiplier(value); emit enhancementChanged(); }
 QString QmlSettings::applicationExecutable() const { return QDir::toNativeSeparators(QCoreApplication::applicationFilePath()); }

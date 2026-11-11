@@ -21,7 +21,7 @@ if (!$BaselineOnly) {
         if ((Get-FileHash (Join-Path $directoryPath $item[0])).Hash.ToLowerInvariant() -ne $info.($item[1])) { throw '[App][Package] Executable identity mismatch.' }
     }
     if ($info.app_version -ne $Version) { throw '[App][Package] Version metadata mismatch.' }
-    if (Get-ChildItem -LiteralPath $directoryPath -Recurse -File | Where-Object {$_.Name -in @('nvngx_dlssnr.dll','dlssnr.dll')}) { throw '[RTX][Package] Public package contains NR.' }
+    if (Get-ChildItem -LiteralPath $directoryPath -Recurse -File | Where-Object {$_.Name -in @('nvngx_dlssnr.dll','dlssnr.dll','nvngx_vsr.dll')}) { throw '[RTX][Package] Public package contains user-supplied NR/VSR.' }
 }
 function RunClean([string]$Exe, [string]$Arguments) {
     $start = [Diagnostics.ProcessStartInfo]::new($Exe, $Arguments)

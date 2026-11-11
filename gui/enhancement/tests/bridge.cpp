@@ -133,6 +133,17 @@ int main(int argc, char **argv)
         options.percent = argument("--percent", 65);
         options.sharpness = argument("--sharpness", 0);
         options.fgMultiplier = unsigned(argument("--multiplier", 2));
+        options.vsrQuality = unsigned(argument("--vsr", 0));
+        if (options.vsrQuality) {
+            options.inputWidth = unsigned(argument("--input-width", 320));
+            options.inputHeight = unsigned(argument("--input-height", 180));
+        }
+        bool vsrObserved = false;
+        double vsrGpuMs = 0;
+        QObject::connect(&pipeline, &EnhancementPipeline::timingsChanged, &app,
+            [&](double, double, double, double vsr, double, double, bool active) {
+                vsrObserved |= active; vsrGpuMs = std::max(vsrGpuMs, vsr);
+            });
         if (options.fgMultiplier < 2 || options.fgMultiplier > 4) return 2;
         options.nrPassCount = qBound(1, argument("--passes", 1), 3);
         for (unsigned n = 1; n < options.nrPassCount; ++n) {
@@ -188,6 +199,13 @@ int main(int argc, char **argv)
                     message.contains("not installed") || message.contains("unavailable") ||
                     message.contains("manifest") || message.contains("package changed"))
                 {
+                    if (options.vsrQuality && !app.arguments().contains("--expect-vsr-unavailable") && (!vsrObserved || vsrGpuMs <= 0)) {
+                        qCritical() << "VSR not active or GPU timing missing"; app.quit(); return;
+                    }
+                    if (options.vsrQuality && app.arguments().contains("--expect-vsr-unavailable") && vsrObserved) {
+                        qCritical() << "VSR unexpectedly active"; app.quit(); return;
+                    }
+                    if (options.vsrQuality) qInfo() << "VSR active=" << vsrObserved << "GPU ms=" << vsrGpuMs;
                     if (expectFailure)
                         result = 0;
                     app.quit();
@@ -249,7 +267,8 @@ int main(int argc, char **argv)
                 source.repr = nativeTarget.repr = pl_color_repr_rgb;
                 source.repr.alpha = nativeTarget.repr.alpha = PL_ALPHA_NONE;
                 source.color = nativeTarget.color = pl_color_space_srgb;
-                source.crop = nativeTarget.crop = {0, 0, float(width), float(height)};
+                source.crop = {0, 0, float(width), float(height)};
+                nativeTarget.crop = {0, 0, float(tex->params.w), float(tex->params.h)};
                 if (!pl_render_image(renderer, &source, &nativeTarget, &pl_render_default_params))
                 {
                     qCritical() << "Native input render failed";
@@ -342,11 +361,19 @@ int main(int argc, char **argv)
                     app.quit();
                     return;
                 }
-                if (verifyPixels && !options.neural && !options.frameGeneration && input != output)
+                if (verifyPixels && !options.neural && !options.frameGeneration && !options.vsrQuality && input != output)
                 {
                     qCritical() << "Round-trip pixels differ on frame" << id;
                     app.quit();
                     return;
+                }
+                if (verifyPixels && vsrObserved) {
+                    size_t litPixels = 0;
+                    for (size_t n = 0; n < output.size(); n += 4)
+                        if (unsigned(output[n]) + output[n + 1] + output[n + 2] > 12) ++litPixels;
+                    if (litPixels < output.size() / 40) {
+                        qCritical() << "VSR produced blank synthetic output"; app.quit(); return;
+                    }
                 }
                 if (options.neural && !nrObserved)
                 {
@@ -396,6 +423,13 @@ int main(int argc, char **argv)
                 }
                 if (completed >= targetFrames || (soak && duration.elapsed() >= soak * 1000))
                 {
+                    if (options.vsrQuality && !app.arguments().contains("--expect-vsr-unavailable") && (!vsrObserved || vsrGpuMs <= 0)) {
+                        qCritical() << "VSR not active or GPU timing missing"; app.quit(); return;
+                    }
+                    if (options.vsrQuality && app.arguments().contains("--expect-vsr-unavailable") && vsrObserved) {
+                        qCritical() << "VSR unexpectedly active"; app.quit(); return;
+                    }
+                    if (options.vsrQuality) qInfo() << "VSR active=" << vsrObserved << "GPU ms=" << vsrGpuMs;
                     if (expectFailure)
                     {
                         qCritical() << "Expected failure did not occur";

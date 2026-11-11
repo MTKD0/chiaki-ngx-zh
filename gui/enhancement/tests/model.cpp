@@ -119,5 +119,20 @@ int main()
     CHECK(passConfig(changed, 0).tuning.intensity == 0 && passConfig(changed, 1).tuning.intensity == 1);
     changed = c; changed.version = 4; CHECK(!valid(changed));
     c.version = 2; CHECK(!valid(c));
-    std::puts("Enhancement geometry, per-pass settings and IPC validation passed");
+    c.version = Version;
+    changed = c; changed.vsrQuality = 5; CHECK(!valid(changed));
+    changed = c; changed.flags |= Vsr; CHECK(!valid(changed));
+    changed.vsrQuality = 3; changed.inputWidth = 640; changed.inputHeight = 360;
+    changed.width = 1280; changed.height = 720; CHECK(valid(changed));
+    CHECK(inputExtent(changed).width == 640);
+    changed.inputHeight = 0; CHECK(!valid(changed));
+    uint64_t lastGenerated = 0, counted = 0;
+    for (unsigned frame = 1; frame <= 30; ++frame)
+        for (unsigned phase = 1; phase <= 3; ++phase) {
+            auto key = presentationKey(frame, phase);
+            if (key != lastGenerated) { ++counted; lastGenerated = key; }
+            CHECK(key == presentationKey(frame, phase)); // A repeated render must not add a phase.
+        }
+    CHECK(counted == 90); // 30 real + 90 generated = 120, rather than the former 60.
+    std::puts("Enhancement geometry, VSR input/output, 4x phase identity and IPC validation passed");
 }

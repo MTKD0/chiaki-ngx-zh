@@ -346,6 +346,8 @@ class StreamSession : public QObject
 		bool GetConnected() { return connected; }
 		double GetMeasuredBitrate()	{ return measured_bitrate; }
 		double GetAveragePacketLoss()	{ return average_packet_loss; }
+        // Senkusha's connection-time RTT probe; this is an estimate, not a live one-way measurement.
+        double GetNetworkOneWayMs() const { return connected && session.rtt_valid ? session.rtt_us / 2000.0 : -1.0; }
 		quint64 DecoderFlushGeneration() const { return decoder_flush_generation.loadRelaxed(); }
 		int GetFramesLost()		{ return frames_lost; }
 		bool GetMuted()	{ return muted; }
