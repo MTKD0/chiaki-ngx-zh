@@ -12,6 +12,7 @@ SamplerState clampSampler : register(s0);
 cbuffer Params : register(b0) {
     uint2 sourceSize; uint2 outputSize;
     float2 vectorScale; float sharpness; uint resetHistory;
+    float4 extraA; float4 extraB;
 };
 [numthreads(8,8,1)] void scaleMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
@@ -38,6 +39,92 @@ cbuffer Params : register(b0) {
     float2 v11 = optical.Load(int3(clamp(lo+int2(1,1),int2(0,0),limit),0));
     float2 v = lerp(lerp(v00,v10,f.x),lerp(v01,v11,f.x),f.y);
     target[p.xy] = float4(v/32.0*vectorScale,0,0);
+}
+// --- Motion refinement -------------------------------------------------------
+// Vectors are in source-luma pixels, pointing from the current frame to the
+// previous one (the NVOFA output divided by its S10.5 scale).
+float2 flowAt(int2 q, int2 limit) {
+    return float2(optical.Load(int3(clamp(q,int2(0,0),limit),0)))/32.0;
+}
+#define SORT2(x,y) { float2 low_ = min(x,y); y = max(x,y); x = low_; }
+// 3x3 component-wise median, then snap to the fitted global (camera) model.
+// extraA = (a0,a1,a2,valid), extraB = (b0,b1,b2,snap pixels); model coordinates
+// are grid positions normalised to [-0.5,0.5]. A rigid background then moves as
+// one surface instead of wobbling with per-block estimation noise.
+[numthreads(8,8,1)] void refineMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 limit = int2(sourceSize)-1;
+    float2 v[9];
+    for(int j=0;j<3;++j) for(int i=0;i<3;++i)
+        v[j*3+i] = flowAt(int2(p.xy)+int2(i-1,j-1),limit);
+    SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
+    SORT2(v[0],v[1]) SORT2(v[3],v[4]) SORT2(v[6],v[7])
+    SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
+    SORT2(v[0],v[3]) SORT2(v[5],v[8]) SORT2(v[4],v[7])
+    SORT2(v[3],v[6]) SORT2(v[1],v[4]) SORT2(v[2],v[5])
+    SORT2(v[4],v[7]) SORT2(v[4],v[2]) SORT2(v[6],v[4])
+    SORT2(v[4],v[2])
+    float2 m = v[4];
+    if(extraA.w > 0.5) {
+        float2 u = (p.xy+0.5)/outputSize-0.5;
+        float2 g = float2(extraA.x+extraA.y*u.x+extraA.z*u.y,
+                          extraB.x+extraB.y*u.x+extraB.z*u.y);
+        float snap = extraB.w+0.03*length(g);
+        m = lerp(g,m,smoothstep(snap,2.0*snap,length(m-g)));
+    }
+    target[p.xy] = float4(m,0,0);
+}
+// a = refined vectors, b = current luma, c = previous luma. Photometric error of
+// the motion-compensated match; extraA.xy = (reliable below, unreliable above).
+[numthreads(8,8,1)] void confidenceMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    uint lw, lh; b.GetDimensions(lw,lh);
+    float2 lumaSize = float2(lw,lh);
+    float2 center = (p.xy+0.5)*lumaSize/outputSize;
+    float2 v = a.Load(int3(p.xy,0)).xy;
+    float error = 0;
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i) {
+        float2 q = center+float2(i,j)*2.0;
+        float now = b.SampleLevel(clampSampler,q/lumaSize,0).r;
+        float before = c.SampleLevel(clampSampler,(q+v)/lumaSize,0).r;
+        error += abs(now-before);
+    }
+    float confidence = 1.0-smoothstep(extraA.x,extraA.y,error/9.0);
+    target[p.xy] = float4(confidence,confidence,confidence,1);
+}
+// a = refined vectors (grid), b = current luma. Joint-bilateral upsampling:
+// a pixel takes the vector of the grid cells that look like it, so motion
+// boundaries follow image edges instead of being blurred across them.
+// extraA.x = luma similarity sigma.
+[numthreads(8,8,1)] void guidedMotionMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float2 uv = (p.xy+0.5)/outputSize;
+    float2 g = uv*sourceSize-0.5;
+    int2 lo = int2(floor(g));
+    float2 f = frac(g);
+    int2 limit = int2(sourceSize)-1;
+    float guide = b.SampleLevel(clampSampler,uv,0).r;
+    float2 sum = float2(0,0);
+    float weight = 0;
+    for(int j=0;j<2;++j) for(int i=0;i<2;++i) {
+        int2 q = clamp(lo+int2(i,j),int2(0,0),limit);
+        float spatial = (i ? f.x : 1.0-f.x)*(j ? f.y : 1.0-f.y);
+        float cell = b.SampleLevel(clampSampler,(q+0.5)/sourceSize,0).r;
+        float d = (cell-guide)/extraA.x;
+        float w = spatial*exp(-d*d)+1e-4;
+        sum += a.Load(int3(q,0)).xy*w;
+        weight += w;
+    }
+    target[p.xy] = float4(sum/weight*vectorScale,0,0);
+}
+// a = generated frame, b = nearest real frame, c = confidence (grid). Where the
+// motion estimate is unreliable, repeat the real frame instead of warping.
+[numthreads(8,8,1)] void fallbackMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float confidence = c.SampleLevel(clampSampler,(p.xy+0.5)/outputSize,0).r;
+    float3 generated = a.Load(int3(p.xy,0)).rgb;
+    float3 real = b.Load(int3(p.xy,0)).rgb;
+    target[p.xy] = float4(lerp(real,generated,confidence),1);
 }
 [numthreads(8,8,1)] void residualMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;

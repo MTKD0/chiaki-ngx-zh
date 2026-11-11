@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-AGPL-3.0-only-OpenSSL
 #include "../protocol.h"
 #include "../runtime_route.h"
+#include "../motion_model.h"
+#include <cmath>
+#include <vector>
 #include <cstdio>
 #include <cstdlib>
 using namespace chiaki_enhancement;
@@ -139,5 +142,37 @@ int main()
             CHECK(key == presentationKey(frame, phase)); // A repeated render must not add a phase.
         }
     CHECK(counted == 90); // 30 real + 90 generated = 120, rather than the former 60.
-    std::puts("Enhancement geometry, VSR input/output, 4x phase identity and IPC validation passed");
+    {
+        // Camera pan + slight zoom over a 120x68 flow grid, with a quarter of the
+        // grid moving independently: the model must follow the camera only.
+        const unsigned gw = 120, gh = 68;
+        std::vector<uint8_t> grid(size_t(gw) * gh * 4);
+        auto put = [&](unsigned x, unsigned y, double vx, double vy) {
+            int16_t v[2] = {int16_t(std::lround(vx * 32.0)), int16_t(std::lround(vy * 32.0))};
+            std::memcpy(grid.data() + (size_t(y) * gw + x) * 4, v, 4);
+        };
+        for (unsigned y = 0; y < gh; ++y)
+            for (unsigned x = 0; x < gw; ++x) {
+                const double u = (x + 0.5) / gw - 0.5, v = (y + 0.5) / gh - 0.5;
+                if (x < gw / 2 && y < gh / 2) put(x, y, -20.0, 9.0);
+                else put(x, y, 6.5 + 4.0 * u, -2.25 + 4.0 * v);
+            }
+        const auto model = fitGlobalMotion(grid.data(), gw, gh);
+        CHECK(model.valid);
+        CHECK(std::fabs(model.a[0] - 6.5f) < 0.1f && std::fabs(model.b[0] + 2.25f) < 0.1f);
+        CHECK(std::fabs(model.a[1] - 4.0f) < 0.2f && std::fabs(model.b[2] - 4.0f) < 0.2f);
+        CHECK(std::fabs(model.a[2]) < 0.2f && std::fabs(model.b[1]) < 0.2f);
+        CHECK(model.inliers * 100 >= model.samples * 70 && model.inliers * 100 <= model.samples * 80);
+        // No dominant motion: every cell differs, so no model may be reported.
+        uint32_t seed = 12345;
+        for (unsigned y = 0; y < gh; ++y)
+            for (unsigned x = 0; x < gw; ++x) {
+                seed = seed * 1664525u + 1013904223u; const double vx = int((seed >> 8) % 801) / 10.0 - 40.0;
+                seed = seed * 1664525u + 1013904223u; const double vy = int((seed >> 8) % 801) / 10.0 - 40.0;
+                put(x, y, vx, vy);
+            }
+        CHECK(!fitGlobalMotion(grid.data(), gw, gh).valid);
+        CHECK(!fitGlobalMotion(nullptr, gw, gh).valid);
+    }
+    std::puts("Enhancement geometry, VSR input/output, 4x phase identity, global motion fit and IPC validation passed");
 }

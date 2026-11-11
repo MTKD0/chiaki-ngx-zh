@@ -10,6 +10,7 @@
 #include "third-party/nvofa/nvOpticalFlowD3D12.h"
 #include "protocol.h"
 #include "runtime_route.h"
+#include "motion_model.h"
 #include "crash_dump_win.h"
 #include "worker_shaders.h"
 #include <array>
@@ -297,7 +298,7 @@ struct Gpu
         params[0].DescriptorTable.NumDescriptorRanges = 2;
         params[0].DescriptorTable.pDescriptorRanges = ranges;
         params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[1].Constants.Num32BitValues = 8;
+        params[1].Constants.Num32BitValues = 16;
         D3D12_STATIC_SAMPLER_DESC sampler{};
         sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
         sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -321,8 +322,7 @@ struct Gpu
         check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&descriptors)),
               "CreateDescriptorHeap");
         descriptorSize = device->GetDescriptorHandleIncrementSize(hd.Type);
-        for (const char *entry : {"scaleMain", "grayMain", "zeroMain", "motionMain", "residualMain", "hdrProxyMain", "hdrResidualMain", "hdrPatternMain",
-                                  "easuMain", "rcasMain"})
+        auto compile = [&](const char *entry)
         {
             const char *source =
                 (std::strcmp(entry, "easuMain") == 0 || std::strcmp(entry, "rcasMain") == 0)
@@ -338,8 +338,23 @@ struct Gpu
             pd.CS = {blob->GetBufferPointer(), blob->GetBufferSize()};
             check(device->CreateComputePipelineState(&pd, IID_PPV_ARGS(&shaders[entry])),
                   "Create compute pipeline");
+        };
+        for (const char *entry : {"scaleMain", "grayMain", "zeroMain", "motionMain", "residualMain", "hdrProxyMain", "hdrResidualMain", "hdrPatternMain",
+                                  "easuMain", "rcasMain"})
+            compile(entry);
+        // Motion refinement is optional: a failure here keeps the plain vector path.
+        try
+        {
+            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain"})
+                compile(entry);
+            refineShaders = true;
+        }
+        catch (const std::exception &e)
+        {
+            std::fprintf(stderr, "[RTX][Motion] refinement shaders unavailable: %s\n", e.what());
         }
     }
+    bool refineShaders = false;
     void wait()
     {
         check(queue->Signal(fence.Get(), ++tick), "Signal GPU fence");
@@ -446,7 +461,7 @@ struct Gpu
     }
     void run(const char *entry, Texture *input, Texture &out, Texture *second = nullptr,
              Texture *third = nullptr, Texture *flow = nullptr, float sharpness = 0, float sx = 1,
-             float sy = 1)
+             float sy = 1, const float *extra = nullptr)
     {
         if (descriptorCursor + 6 > 256)
             throw std::runtime_error("Descriptor capacity exceeded");
@@ -484,6 +499,7 @@ struct Gpu
             uint32_t sw, sh, ow, oh;
             float sx, sy, sharp;
             uint32_t reset;
+            float extra[8];
         } k{input ? input->width : (flow ? flow->width : out.width),
             input ? input->height : (flow ? flow->height : out.height),
             out.width,
@@ -491,37 +507,44 @@ struct Gpu
             sx,
             sy,
             sharpness,
-            0};
+            0,
+            {}};
+        if (extra)
+            std::memcpy(k.extra, extra, sizeof k.extra);
         ID3D12DescriptorHeap *heap = descriptors.Get();
         list->SetDescriptorHeaps(1, &heap);
         list->SetComputeRootSignature(root.Get());
         list->SetPipelineState(shaders.at(entry).Get());
         list->SetComputeRootDescriptorTable(0, gpu);
-        list->SetComputeRoot32BitConstants(1, 8, &k, 0);
+        list->SetComputeRoot32BitConstants(1, 16, &k, 0);
         list->Dispatch((out.width + 7) / 8, (out.height + 7) / 8, 1);
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         b.UAV.pResource = out.resource.Get();
         list->ResourceBarrier(1, &b);
     }
-    // Persistent readback for the small scene-cut thumbnail. The copy is recorded
-    // into the caller's open list: no extra submission or allocation per frame.
-    ComPtr<ID3D12Resource> sampleReadback;
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT sampleLayout{};
-    UINT64 sampleBytes = 0;
-    void queueSample(Texture &t)
+    // Persistent readbacks for small per-frame inputs (scene-cut thumbnail, flow
+    // grid). The copy is recorded into the caller's open list: no allocation per
+    // frame. Each Readback always serves the same texture.
+    struct Readback
     {
-        if (!sampleReadback)
+        ComPtr<ID3D12Resource> buffer;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout{};
+        UINT64 bytes = 0;
+    };
+    void queueReadback(Readback &r, Texture &t)
+    {
+        if (!r.buffer)
         {
             auto desc = t.resource->GetDesc();
             UINT rows = 0;
             UINT64 rowBytes = 0;
-            device->GetCopyableFootprints(&desc, 0, 1, 0, &sampleLayout, &rows, &rowBytes, &sampleBytes);
+            device->GetCopyableFootprints(&desc, 0, 1, 0, &r.layout, &rows, &rowBytes, &r.bytes);
             D3D12_HEAP_PROPERTIES hp{};
             hp.Type = D3D12_HEAP_TYPE_READBACK;
             D3D12_RESOURCE_DESC bd{};
             bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            bd.Width = sampleBytes;
+            bd.Width = r.bytes;
             bd.Height = 1;
             bd.DepthOrArraySize = 1;
             bd.MipLevels = 1;
@@ -529,31 +552,32 @@ struct Gpu
             bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
             check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                  IID_PPV_ARGS(&sampleReadback)),
-                  "Sample readback buffer");
+                                                  IID_PPV_ARGS(&r.buffer)),
+                  "Persistent readback buffer");
         }
         transition(t, D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
         src.pResource = t.resource.Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst.pResource = sampleReadback.Get();
+        dst.pResource = r.buffer.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        dst.PlacedFootprint = sampleLayout;
+        dst.PlacedFootprint = r.layout;
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
-    // Call after the list containing queueSample() has completed. RGBA8 only.
-    std::vector<uint8_t> sample(const Texture &t)
+    // Call after the list containing queueReadback() has completed. Four bytes per
+    // texel (RGBA8, R16G16); rows are returned tightly packed.
+    std::vector<uint8_t> readback(Readback &r, const Texture &t)
     {
         uint8_t *data = nullptr;
-        D3D12_RANGE range{0, static_cast<SIZE_T>(sampleBytes)};
-        check(sampleReadback->Map(0, &range, reinterpret_cast<void **>(&data)), "Map sample readback");
+        D3D12_RANGE range{0, static_cast<SIZE_T>(r.bytes)};
+        check(r.buffer->Map(0, &range, reinterpret_cast<void **>(&data)), "Map persistent readback");
         std::vector<uint8_t> result(static_cast<size_t>(t.width) * t.height * 4);
         for (unsigned y = 0; y < t.height; ++y)
             std::memcpy(result.data() + static_cast<size_t>(y) * t.width * 4,
-                        data + sampleLayout.Offset + static_cast<size_t>(y) * sampleLayout.Footprint.RowPitch,
+                        data + r.layout.Offset + static_cast<size_t>(y) * r.layout.Footprint.RowPitch,
                         static_cast<size_t>(t.width) * 4);
         D3D12_RANGE empty{0, 0};
-        sampleReadback->Unmap(0, &empty);
+        r.buffer->Unmap(0, &empty);
         return result;
     }
     std::vector<uint8_t> pixels(Texture &t)
@@ -728,6 +752,10 @@ struct OpticalFlow
     NvOFHandle handle = nullptr;
     NV_OF_D3D12_API_FUNCTION_LIST api{};
     Texture current, previous, vectors;
+    // execute() swaps the pair: afterwards `previous` holds this frame's luma and
+    // `current` the frame before it, until the next prepare() overwrites it.
+    Texture &lumaNow() { return previous; }
+    Texture &lumaBefore() { return current; }
     NvOFGPUBufferHandle cur = nullptr, prev = nullptr, flow = nullptr;
     bool history = false;
     ~OpticalFlow()
@@ -879,6 +907,19 @@ struct Worker
     std::unique_ptr<OpticalFlow> optical;
     HMODULE proxy = nullptr;
     Texture fullMotion, fullDepth, fgReal, thumbnail, opticalProxy, vsrOutput;
+    // Motion refinement: median + global-model snap and a photometric confidence
+    // on the flow grid; generated frames fall back to the nearest real frame where
+    // the estimate is unreliable.
+    Texture refinedFlow, flowConfidence, previousReal;
+    std::array<Texture, MaxGeneratedFrames> fgPrivate;
+    Gpu::Readback thumbnailReadback, vectorReadback;
+    bool motionRefine = false, fgFallback = false, previousRealValid = false;
+    static bool disabledByEnvironment(const wchar_t *name)
+    {
+        wchar_t value[8] = {};
+        const DWORD length = GetEnvironmentVariableW(name, value, 8);
+        return length && length < 8 && (_wcsicmp(value, L"off") == 0 || _wcsicmp(value, L"0") == 0);
+    }
     std::vector<uint8_t> previousThumbnail, previousRealPixels;
     Command config{};
     fs::path runtimeDir;
@@ -1074,6 +1115,24 @@ struct Worker
             fullDepth = gpu->texture(c.width, c.height, DXGI_FORMAT_R32_FLOAT);
             fgReal = gpu->texture(c.width, c.height);
         }
+        // CHIAKI_ENHANCEMENT_MOTION_REFINE=off restores the plain flow vectors;
+        // CHIAKI_ENHANCEMENT_FG_FALLBACK=off keeps refinement but never repeats real pixels.
+        motionRefine = optical && gpu->refineShaders &&
+                       !disabledByEnvironment(L"CHIAKI_ENHANCEMENT_MOTION_REFINE");
+        if (motionRefine)
+        {
+            refinedFlow = gpu->texture(optical->vectors.width, optical->vectors.height, DXGI_FORMAT_R16G16_FLOAT);
+            flowConfidence = gpu->texture(optical->vectors.width, optical->vectors.height, DXGI_FORMAT_R8_UNORM);
+        }
+        fgFallback = motionRefine && fg && !disabledByEnvironment(L"CHIAKI_ENHANCEMENT_FG_FALLBACK");
+        if (fgFallback)
+        {
+            previousReal = gpu->texture(c.width, c.height);
+            for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
+                fgPrivate[n] = gpu->texture(c.width, c.height);
+        }
+        previousRealValid = false;
+        std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u\n", unsigned(motionRefine), unsigned(fgFallback));
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1159,10 +1218,10 @@ struct Worker
                 flowInput = &opticalProxy;
             }
             gpu->run("scaleMain", flowInput, thumbnail);
-            gpu->queueSample(thumbnail);
+            gpu->queueReadback(thumbnailReadback, thumbnail);
             optical->prepare(*gpu, *flowInput);
             gpu->submit();
-            auto sample = gpu->sample(thumbnail);
+            auto sample = gpu->readback(thumbnailReadback, thumbnail);
             if (!reset && sample.size() == previousThumbnail.size())
             {
                 uint64_t difference = 0;
@@ -1192,10 +1251,47 @@ struct Worker
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] optical-flow completed\n");
         }
+        // Camera motion is fitted on the CPU from the small flow grid. A reset frame
+        // has no meaningful flow and keeps the model invalid.
+        GlobalMotion global;
+        if (motionRefine && !reset)
+        {
+            gpu->begin();
+            gpu->queueReadback(vectorReadback, optical->vectors);
+            gpu->submit();
+            const auto grid = gpu->readback(vectorReadback, optical->vectors);
+            global = fitGlobalMotion(grid.data(), optical->vectors.width, optical->vectors.height);
+        }
         QueryPerformanceCounter(&flowEnd);
+        if (motionRefine && (reset || c.frameId % 120 == 0))
+            std::fprintf(stderr, "[RTX][Motion] global_valid=%u inliers=%u/%u pan=%.2f,%.2f\n",
+                unsigned(global.valid), global.inliers, global.samples, global.a[0], global.b[0]);
         gpu->begin();
         for (unsigned k = 0; k < MaxNrPasses * 4 + 4; ++k)
             gpu->mark(k);
+        if (motionRefine)
+        {
+            const float model[8] = {global.a[0], global.a[1], global.a[2], global.valid ? 1.0f : 0.0f,
+                                    global.b[0], global.b[1], global.b[2], 0.75f};
+            gpu->run("refineMain", nullptr, refinedFlow, nullptr, nullptr, &optical->vectors, 0, 1, 1, model);
+            // Mean absolute luma error of the compensated match: reliable below 0.06,
+            // unreliable above 0.14 (0..1 scale); stream noise stays well under the first.
+            const float thresholds[8] = {0.06f, 0.14f, 0, 0, 0, 0, 0, 0};
+            gpu->run("confidenceMain", &refinedFlow, flowConfidence, &optical->lumaNow(), &optical->lumaBefore(),
+                     nullptr, 0, 1, 1, thresholds);
+        }
+        // Flow vectors scaled into the target's pixels; refined vectors are upsampled
+        // along image edges, the plain path bilinearly.
+        auto motionVectors = [&](Texture &out, float sx, float sy)
+        {
+            if (motionRefine)
+            {
+                const float guide[8] = {0.08f, 0, 0, 0, 0, 0, 0, 0};
+                gpu->run("guidedMotionMain", &refinedFlow, out, &optical->lumaNow(), nullptr, nullptr, 0, sx, sy, guide);
+            }
+            else
+                gpu->run("motionMain", nullptr, out, nullptr, nullptr, &optical->vectors, 0, sx, sy);
+        };
         Texture *processed = &s.input;
         uint32_t active = c.flags & BridgeTest;
         const bool vsrFirst = (c.flags & VsrFirst) && !hdr && vsrOutput.resource;
@@ -1249,8 +1345,7 @@ struct Worker
                     modelInput = &stage.proxy;
                 }
                 gpu->run("scaleMain", modelInput, reduced);
-                gpu->run("motionMain", nullptr, motion, nullptr, nullptr, &optical->vectors, 0,
-                         float(reduced.width) / inputSize.width, float(reduced.height) / inputSize.height);
+                motionVectors(motion, float(reduced.width) / inputSize.width, float(reduced.height) / inputSize.height);
                 gpu->run("zeroMain", nullptr, depth);
                 gpu->transition(reduced, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 gpu->transition(motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1345,8 +1440,7 @@ struct Worker
         if (fg)
         {
             // Source-resolution flow vectors, expressed in output pixels.
-            gpu->run("motionMain", nullptr, fullMotion, nullptr, nullptr, &optical->vectors, 0,
-                     float(c.width) / inputSize.width, float(c.height) / inputSize.height);
+            motionVectors(fullMotion, float(c.width) / inputSize.width, float(c.height) / inputSize.height);
             gpu->run("zeroMain", nullptr, fullDepth);
             gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1408,14 +1502,31 @@ struct Worker
             gpu->mark(MaxNrPasses * 4);
             // DLSS 4 semantics used by chiaki-ng-enhanced's DlssBackend:
             // one real pair, separate outputs, one-based inner frame indices.
+            // With the fallback active, FG writes private textures and the shared outputs
+            // receive the confidence-weighted mix with the nearest real frame.
+            const bool fallback = fgFallback && previousRealValid && !reset;
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
-                fg->resource("DLSSG.OutputInterpolated", s.generatedFrame(n));
+                Texture &fgTarget = fallback ? fgPrivate[n] : s.generatedFrame(n);
+                gpu->transition(fgTarget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                fg->resource("DLSSG.OutputInterpolated", fgTarget);
                 p.Set("DLSSG.MultiFrameIndex", n + 1);
                 fg->eval(*gpu);
             }
+            if (fallback)
+                for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
+                    // Phases in the first half of the interval are closer to the previous real frame.
+                    const bool nearPrevious = (n + 1) * 2 < c.fgMultiplier;
+                    gpu->run("fallbackMain", &fgPrivate[n], s.generatedFrame(n),
+                             nearPrevious ? &previousReal : processed, &flowConfidence);
+                }
             gpu->mark(MaxNrPasses * 4 + 1);
             if (!history)
                 std::fprintf(stderr, "[RTX][FG] EvaluateFeature returned\n");
+        }
+        if (fgFallback)
+        {
+            gpu->copy(s.real, previousReal);
+            previousRealValid = true;
         }
         gpu->transition(s.input, D3D12_RESOURCE_STATE_COMMON);
         gpu->transition(s.real, D3D12_RESOURCE_STATE_COMMON);
