@@ -224,13 +224,13 @@ private:
     uint64_t gameplay_stats_since = 0, gameplay_last_real = 0, gameplay_last_fg = 0;
     uint64_t gameplay_real_count = 0, gameplay_fg_count = 0;
     void recordGameplayPresentation(bool generated, uint64_t frameKey);
-    QString enhancement_status = QStringLiteral("Inactive — not streaming");
-    QString enhancement_dimensions = QStringLiteral("Video dimensions available during streaming");
+    QString enhancement_status = tr("Inactive — not streaming");
+    QString enhancement_dimensions = tr("Video dimensions available during streaming");
     bool enhancement_upscaling_eligible = false;
     bool enhancement_neural_available = true;
     bool enhancement_applying = false;
     QString enhancement_neural_failure;
-    QString enhancement_cadence = QStringLiteral("No enhanced frames presented");
+    QString enhancement_cadence = tr("No enhanced frames presented");
     bool enhancement_nr_active = false, enhancement_fsr_active = false, enhancement_fg_active = false;
     int eye_candy_log_state = -1; // render-thread state-change logging only
     uint64_t enhancement_direct_signature = 0, enhancement_last_signature = 0;
