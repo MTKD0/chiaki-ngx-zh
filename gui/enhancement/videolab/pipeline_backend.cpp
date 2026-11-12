@@ -14,6 +14,12 @@ EnhancementOptions enhancementOptions(const LabOptions &o)
     options.fsr = o.fsr;
     options.percent = o.percent;
     options.sharpness = o.sharpness;
+    if (o.vsr)
+    {
+        options.vsrQuality = o.vsr;
+        options.inputWidth = unsigned(o.width);
+        options.inputHeight = unsigned(o.height);
+    }
     return options;
 }
 
@@ -66,6 +72,8 @@ VulkanDevice::~VulkanDevice()
 {
     if (source)
         pl_tex_destroy(vk->gpu, &source);
+    if (readback)
+        pl_tex_destroy(vk->gpu, &readback);
     if (renderer)
         pl_renderer_destroy(&renderer);
     if (vk)
@@ -106,13 +114,50 @@ bool VulkanDevice::renderInput(const uint8_t *rgba, int width, int height, pl_te
     return pl_render_image(renderer, &image, &native, &pl_render_default_params);
 }
 
+bool VulkanDevice::readOutput(const pl_frame &frame, int width, int height, uint8_t *rgba)
+{
+    pl_tex texture = frame.planes[0].texture;
+    if (texture->params.w != width || texture->params.h != height)
+    {
+        // Upscaled output is scored against source-resolution ground truth.
+        pl_tex_params params{};
+        params.w = width;
+        params.h = height;
+        params.format = pl_find_named_fmt(vk->gpu, "rgba8");
+        params.renderable = true;
+        params.host_readable = true;
+        if (!params.format || !pl_tex_recreate(vk->gpu, &readback, &params))
+            return false;
+        pl_frame target{};
+        target.num_planes = 1;
+        target.planes[0].texture = readback;
+        target.planes[0].components = 4;
+        for (int c = 0; c < 4; ++c)
+            target.planes[0].component_mapping[c] = c;
+        target.repr = pl_color_repr_rgb;
+        target.repr.alpha = PL_ALPHA_NONE;
+        target.color = frame.color;
+        target.crop = {0, 0, float(width), float(height)};
+        pl_render_params render = pl_render_default_params;
+        render.dither_params = nullptr; // Dither noise would lower every score.
+        if (!pl_render_image(renderer, &frame, &target, &render))
+            return false;
+        texture = readback;
+    }
+    pl_tex_transfer_params transfer{};
+    transfer.tex = texture;
+    transfer.ptr = rgba;
+    return pl_tex_download(vk->gpu, &transfer);
+}
+
 namespace
 {
 class PipelineBackend : public Backend
 {
   public:
     explicit PipelineBackend(const LabOptions &o)
-        : width(o.width), height(o.height), options(enhancementOptions(o)), scratch(size_t(o.width) * o.height * 4)
+        : width(o.width), height(o.height), outputWidth(o.vsr ? o.outputWidth : o.width),
+          outputHeight(o.vsr ? o.outputHeight : o.height), options(enhancementOptions(o)), scratch(size_t(o.width) * o.height * 4)
     {
     }
     ~PipelineBackend() override { stop(); }
@@ -147,7 +192,10 @@ class PipelineBackend : public Backend
                              }
                          });
         QObject::connect(pipeline.get(), &EnhancementPipeline::timingsChanged, &context,
-                         [this](double nr, double, double fg, double, double flow, double, bool) {
+                         [this](double nr, double, double fg, double vsr, double flow, double, bool vsrActive) {
+                             vsrSeen |= vsrActive;
+                             if (vsr > 0)
+                                 vsrMs.add(vsr);
                              if (fg > 0)
                                  fgMs.add(fg);
                              if (flow > 0)
@@ -156,7 +204,7 @@ class PipelineBackend : public Backend
                                  nrMs.add(nr);
                          });
         QObject::connect(pipeline.get(), &EnhancementPipeline::frameAvailable, &context, [this] { drain(); });
-        pipeline->prepare(device.vk, {uint32_t(width), uint32_t(height)}, options, false);
+        pipeline->prepare(device.vk, {uint32_t(outputWidth), uint32_t(outputHeight)}, options, false);
     }
     bool submit(uint64_t frameId, uint64_t timestampUs, const uint8_t *rgba) override
     {
@@ -201,17 +249,7 @@ class PipelineBackend : public Backend
             pl_frame frame{};
             if (!pipeline->outputFrame(frame))
                 return;
-            pl_tex texture = frame.planes[0].texture;
-            if (texture->params.w != width || texture->params.h != height)
-            {
-                fail(QStringLiteral("Pipeline output is %1x%2, expected %3x%4")
-                         .arg(texture->params.w).arg(texture->params.h).arg(width).arg(height));
-                return;
-            }
-            pl_tex_transfer_params transfer{};
-            transfer.tex = texture;
-            transfer.ptr = scratch.data();
-            if (!pl_tex_download(device.vk->gpu, &transfer))
+            if (!device.readOutput(frame, width, height, scratch.data()))
             {
                 fail(QStringLiteral("Output download failed"));
                 return;
@@ -235,7 +273,7 @@ class PipelineBackend : public Backend
     QObject context;
     VulkanDevice device;
     std::unique_ptr<EnhancementPipeline> pipeline;
-    int width, height;
+    int width, height, outputWidth, outputHeight;
     EnhancementOptions options;
     std::vector<uint8_t> scratch;
     QString lastStatus;

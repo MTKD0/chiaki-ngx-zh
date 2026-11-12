@@ -23,6 +23,10 @@ struct LabOptions
     bool frameGeneration = true, neural = false, fsr = true, vsync = false;
     int percent = 65, sharpness = 0, maxRealFrames = 0, worst = 8;
     int windowWidth = 1280, windowHeight = 720;
+    // NVIDIA VSR quality 1-4 (0 = off). The worker upscales each real frame from width x height
+    // to outputWidth x outputHeight before frame generation, as in a stream shown on a larger window.
+    unsigned vsr = 0;
+    int outputWidth = 0, outputHeight = 0;
 };
 
 // A frame generator under test. One real frame goes in; its generated phases (1-based) and then
@@ -41,7 +45,8 @@ class Backend
     virtual void start() = 0;
     virtual bool submit(uint64_t frameId, uint64_t timestampUs, const uint8_t *rgba) = 0;
     virtual void stop() {}
-    Series fgMs, flowMs, nrMs; // GPU stage times reported while running, when the backend has them
+    Series fgMs, flowMs, nrMs, vsrMs; // GPU stage times reported while running, when the backend has them
+    bool vsrSeen = false;
 };
 
 // Linear cross-fade, on the CPU. It is the floor any motion-compensated generator has to beat,

@@ -86,6 +86,7 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
     uint64_t submitted = 0, busyDrops = 0, underruns = 0, sourceTicks = 0;
     Series fgMs, flowMs;
     QString failure, lastStatus;
+    bool vsrSeen = false;
     {
         EnhancementPipeline pipeline;
         const EnhancementOptions options = enhancementOptions(o);
@@ -116,7 +117,8 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
                              }
                          });
         QObject::connect(&pipeline, &EnhancementPipeline::timingsChanged, qApp,
-                         [&](double, double, double fg, double, double flow, double, bool) {
+                         [&](double, double, double fg, double, double flow, double, bool vsrActive) {
+                             vsrSeen |= vsrActive;
                              if (fg > 0)
                                  fgMs.add(fg);
                              if (flow > 0)
@@ -202,7 +204,8 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
         QObject::connect(qApp, &QGuiApplication::lastWindowClosed, qApp, [&] { result = 0; });
 
         pipeline.setSourceInterval(uint64_t(intervalNs / 1000));
-        pipeline.prepare(device.vk, {uint32_t(o.width), uint32_t(o.height)}, options, false);
+        pipeline.prepare(device.vk, {uint32_t(o.vsr ? o.outputWidth : o.width), uint32_t(o.vsr ? o.outputHeight : o.height)},
+                         options, false);
         pump.start();
         qApp->exec();
         stopping = true;
@@ -267,6 +270,8 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
          << "  simulated stream fps: " << realFps << "\n"
          << "frame generation: " << (o.frameGeneration ? QStringLiteral("%1x").arg(o.multiplier) : QStringLiteral("off"))
          << "  present mode: " << (o.vsync ? "fifo" : "immediate") << "\n"
+         << "VSR: " << (o.vsr ? QStringLiteral("quality %1 -> %2x%3%4").arg(o.vsr).arg(o.outputWidth).arg(o.outputHeight)
+                                    .arg(vsrSeen ? "" : " (NEVER ACTIVE)") : QStringLiteral("off")) << "\n"
          << "stream frames offered: " << sourceTicks << "  submitted: " << submitted
          << "  dropped (pipeline busy): " << busyDrops << "  decoder underruns: " << underruns << "\n"
          << "presented: " << real << " real + " << generated << " generated in " << seconds << " s\n";
@@ -289,6 +294,11 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
         summaryFile.write(summary.toUtf8());
     qInfo().noquote() << summary;
     qInfo().noquote() << "[lab] results in" << QDir(o.outDir).absolutePath();
+    if (!result && o.vsr && !vsrSeen)
+    {
+        qCritical() << "[lab] FAILED: VSR was requested but never became active (runtimes/nvngx_vsr.dll missing or rejected?)";
+        result = 1;
+    }
     if (!result && o.frameGeneration && !generated)
     {
         qCritical().noquote() << "[lab] FAILED: frame generation never presented a generated frame. Last status:" << lastStatus;

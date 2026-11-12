@@ -66,7 +66,20 @@ cd release/ngx
 ./enhancement-video-lab.exe E:\rec\game_60fps.mkv --mode realtime
 ```
 
-常用参数：`--start 12 --duration 20` 截取片段；`--frames 300` 限制真实帧数；`--width 1280 --height 720` 降分辨率；`--no-fg` 作为直通对照；`--nr` 叠加神经渲染；`--vsync` 实时模式用 FIFO 呈现；`--worst 16` 多保存一些最差帧；`--help` 列出全部。
+常用参数：`--start 12 --duration 20` 截取片段；`--frames 300` 限制真实帧数；`--width 1280 --height 720` 降分辨率；`--no-fg` 作为直通对照；`--nr` 叠加神经渲染；`--vsr 4 --output 2560x1440` 先超分再插帧（见下节）；`--vsync` 实时模式用 FIFO 呈现；`--worst 16` 多保存一些最差帧；`--help` 列出全部。
+
+## 配合 VSR 超分
+
+实际串流时如果启用 NVIDIA VSR（例如 1080p 串流超分到 2560x1440 的窗口），管线的顺序是：1080p 输入 → VSR 放大到窗口分辨率 → 在放大后的画面上做 DLSS FG。录像仍然录 **1080p**（它对应 PS5 送来的画面），用 `--vsr` 让实验台走同样的顺序：
+
+```powershell
+./enhancement-video-lab.exe E:\rec\game_120fps.mkv --vsr 4 --output 2560x1440
+./enhancement-video-lab.exe E:\rec\game_60fps.mkv --mode realtime --vsr 4 --output 2560x1440
+```
+
+`--vsr` 取 1–4，对应低、中、高、极高；`--output` 默认 2560x1440。需要 `runtimes/nvngx_vsr.dll`，VSR 没有激活时运行会报失败。
+
+真值帧只有 1080p，所以 `quality` 模式把每张输出缩回 1080p 再评分，`--record` 导出的视频也是 1080p。这时 `real frame round trip PSNR` 不再是 100：它是真实帧经过 VSR 再缩回后的分数，也是生成帧分数的上限。比较不同版本时，看生成帧分数与这个上限的差距。`realtime` 模式的窗口显示的是真实的放大后输出。
 
 ## 输出
 
@@ -83,7 +96,7 @@ cd release/ngx
 读数时注意：
 
 - `real frames without generated output` 应接近 0（开头预热的一两帧除外）。数值大说明 FG 没有激活或频繁重置。
-- `real frame round trip PSNR` 在不开 NR 时应为 100（逐位一致）。否则是共享纹理通路的问题，而不是 FG 的问题。
+- `real frame round trip PSNR` 在不开 NR、VSR 时应为 100（逐位一致）。否则是共享纹理通路的问题，而不是 FG 的问题。
 - 均值掩盖问题，优先看 5% 分位、最小值和最差块；再对照 `motion_psnr` 判断是否只在大幅运动时变差。
 
 ## 调优流程

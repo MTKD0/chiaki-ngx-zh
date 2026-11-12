@@ -92,6 +92,8 @@ class QualitySession
         writeWorst();
         if (failure.isEmpty() && o.frameGeneration && realFrames > 1 && !generatedFrames)
             failure = QStringLiteral("frame generation never produced a generated frame");
+        if (failure.isEmpty() && o.vsr && o.mode == "quality" && !backend->vsrSeen)
+            failure = QStringLiteral("VSR was requested but never became active (runtimes/nvngx_vsr.dll missing or rejected?)");
         if (failure.isEmpty() && !realFrames)
             failure = QStringLiteral("the clip produced no frames");
         writeSummary();
@@ -263,7 +265,9 @@ class QualitySession
              << "frame generation: "
              << (o.frameGeneration ? QStringLiteral("%1x -> %2 fps").arg(o.multiplier).arg(realFps * o.multiplier, 0, 'f', 2)
                                    : QStringLiteral("off"))
-             << "  NR: " << (o.neural ? "on" : "off") << "\n"
+             << "  NR: " << (o.neural ? "on" : "off") << "  VSR: "
+             << (o.vsr ? QStringLiteral("quality %1 -> %2x%3, scored at %4x%5").arg(o.vsr).arg(o.outputWidth)
+                             .arg(o.outputHeight).arg(o.width).arg(o.height) : QStringLiteral("off")) << "\n"
              << "real frames: " << realFrames << "  generated frames: " << generatedFrames
              << "  real frames without generated output: " << ungenerated << "\n";
         if (allPsnr.count())
@@ -294,10 +298,13 @@ class QualitySession
             text << "\nNo ground truth: with --decimate " << o.decimate << " and " << o.multiplier
                  << "x no generated frame coincides with a skipped source frame.\n";
         if (bridgePsnr.count())
-            text << "\nreal frame round trip PSNR dB: min " << bridgePsnr.min() << " (100 = bit exact)\n";
+            text << "\nreal frame round trip PSNR dB: min " << bridgePsnr.min() << "  mean " << bridgePsnr.mean()
+                 << (o.vsr || o.neural ? " (ceiling for generated frames: includes VSR/NR and the scale back down)\n"
+                                       : " (100 = bit exact)\n");
         if (backend->fgMs.count() || backend->flowMs.count())
             text << "worker GPU ms: FG mean " << backend->fgMs.mean() << "  optical flow mean "
-                 << backend->flowMs.mean() << "  NR mean " << backend->nrMs.mean() << "\n";
+                 << backend->flowMs.mean() << "  NR mean " << backend->nrMs.mean() << "  VSR mean "
+                 << backend->vsrMs.mean() << "\n";
         text << "elapsed: " << seconds << " s\n";
         if (!failure.isEmpty())
             text << "FAILED: " << failure << "\n";
@@ -389,6 +396,9 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("percent", "NR render percentage, 50-100.", "n", "65");
     add("sharpness", "NR reconstruction sharpness, 0-100.", "n", "0");
     add("no-fsr", "Disable FSR reconstruction after NR.");
+    add("vsr", "NVIDIA VSR quality 1-4: upscale each frame to --output before frame generation, as when "
+               "streaming to a larger window. Scores are taken after scaling back to the source size.", "quality");
+    add("output", "Output size for --vsr.", "WxH", "2560x1440");
     add("out", "Result directory. Default: videolab-out/<time>-<mode>.", "dir");
     add("record", "quality/dry-run: encode every output frame, in display order, to this file.", "file");
     add("encoder", "ffmpeg output options for --record.", "options",
@@ -441,6 +451,20 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     o.fsr = !parser.isSet("no-fsr");
     o.percent = qBound(50, parser.value("percent").toInt(), 100);
     o.sharpness = qBound(0, parser.value("sharpness").toInt(), 100);
+    o.vsr = parser.value("vsr").toUInt();
+    if (parser.isSet("vsr") && (o.vsr < 1 || o.vsr > 4))
+    {
+        qCritical() << "--vsr must be 1 (low) to 4 (ultra)";
+        return false;
+    }
+    const auto output = parser.value("output").split('x');
+    o.outputWidth = output.value(0).toInt();
+    o.outputHeight = output.value(1).toInt();
+    if (o.vsr && (o.outputWidth <= 0 || o.outputHeight <= 0))
+    {
+        qCritical() << "--output must look like 2560x1440";
+        return false;
+    }
     o.worst = qBound(0, parser.value("worst").toInt(), 64);
     o.label = parser.value("label");
     o.history = parser.value("history");
@@ -516,6 +540,17 @@ int main(int argc, char **argv)
     if (options.mode != "realtime" && options.frameGeneration && options.decimate == 1)
         qWarning() << "[lab] --decimate 1 leaves no skipped frames: output is produced but cannot be scored";
 
+    if (options.vsr && (options.outputWidth < options.width || options.outputHeight < options.height))
+    {
+        qCritical().noquote() << QStringLiteral("[lab] --output %1x%2 is smaller than the %3x%4 input; VSR only upscales")
+            .arg(options.outputWidth).arg(options.outputHeight).arg(options.width).arg(options.height);
+        return 2;
+    }
+    if (options.vsr && options.mode == "dry-run")
+    {
+        qWarning() << "[lab] --vsr needs the GPU worker and is ignored in dry-run mode";
+        options.vsr = 0;
+    }
     if (options.mode == "realtime")
         return runRealtime(options, video);
     std::unique_ptr<Backend> backend;
