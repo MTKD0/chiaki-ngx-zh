@@ -157,7 +157,7 @@ class PipelineBackend : public Backend
   public:
     explicit PipelineBackend(const LabOptions &o)
         : width(o.width), height(o.height), outputWidth(o.vsr ? o.outputWidth : o.width),
-          outputHeight(o.vsr ? o.outputHeight : o.height), options(enhancementOptions(o)), scratch(size_t(o.width) * o.height * 4)
+          outputHeight(o.vsr ? o.outputHeight : o.height), intervalUs(o.realIntervalUs), options(enhancementOptions(o)), scratch(size_t(o.width) * o.height * 4)
     {
     }
     ~PipelineBackend() override { stop(); }
@@ -204,6 +204,9 @@ class PipelineBackend : public Backend
                                  nrMs.add(nr);
                          });
         QObject::connect(pipeline.get(), &EnhancementPipeline::frameAvailable, &context, [this] { drain(); });
+        // Phase pacing starts from the nominal interval. Presentation cost stays zero here, so
+        // the pipeline never skips generated frames to protect cadence as it may in realtime.
+        pipeline->setSourceInterval(intervalUs);
         pipeline->prepare(device.vk, {uint32_t(outputWidth), uint32_t(outputHeight)}, options, false);
     }
     bool submit(uint64_t frameId, uint64_t timestampUs, const uint8_t *rgba) override
@@ -274,6 +277,7 @@ class PipelineBackend : public Backend
     VulkanDevice device;
     std::unique_ptr<EnhancementPipeline> pipeline;
     int width, height, outputWidth, outputHeight;
+    uint64_t intervalUs;
     EnhancementOptions options;
     std::vector<uint8_t> scratch;
     QString lastStatus;

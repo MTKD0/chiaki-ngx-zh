@@ -268,6 +268,7 @@ class QualitySession
              << "  NR: " << (o.neural ? "on" : "off") << "  VSR: "
              << (o.vsr ? QStringLiteral("quality %1 -> %2x%3, scored at %4x%5").arg(o.vsr).arg(o.outputWidth)
                              .arg(o.outputHeight).arg(o.width).arg(o.height) : QStringLiteral("off")) << "\n"
+             << "worker switches: " << (o.mode == "dry-run" ? QStringLiteral("n/a") : workerSwitches()) << "\n"
              << "real frames: " << realFrames << "  generated frames: " << generatedFrames
              << "  real frames without generated output: " << ungenerated << "\n";
         if (allPsnr.count())
@@ -333,7 +334,7 @@ class QualitySession
         if (header)
             out << "time,label,clip,backend,width,height,real_fps,multiplier,decimate,real_frames,generated_frames,"
                    "ungenerated_real_frames,psnr_mean,psnr_p5,psnr_min,ssim_mean,worst_tile_mean,blend_psnr_mean,"
-                   "gain_vs_blend,fg_gpu_ms,flow_ms,status\n";
+                   "gain_vs_blend,fg_gpu_ms,flow_ms,vsr,worker_switches,status\n";
         const auto quoted = [](QString value) { return '"' + value.replace('"', "\"\"") + '"'; };
         out << QDateTime::currentDateTime().toString(Qt::ISODate) << ',' << quoted(o.label) << ','
             << quoted(QFileInfo(o.input).fileName()) << ',' << backend->name() << ',' << o.width << ',' << o.height << ','
@@ -341,6 +342,7 @@ class QualitySession
             << generatedFrames << ',' << ungenerated << ',' << allPsnr.mean() << ',' << allPsnr.percentile(5) << ','
             << allPsnr.min() << ',' << allSsim.mean() << ',' << allTile.mean() << ',' << allBlend.mean() << ','
             << allPsnr.mean() - allBlend.mean() << ',' << backend->fgMs.mean() << ',' << backend->flowMs.mean() << ','
+            << o.vsr << ',' << quoted(o.mode == "dry-run" ? QStringLiteral("n/a") : workerSwitches()) << ','
             << quoted(failure.isEmpty() ? QStringLiteral("ok") : failure) << '\n';
     }
 
@@ -411,7 +413,12 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("stage", "Chiaki build directory holding enhancement/nvngx.dll and runtimes/.", "dir");
     add("worker", "Enhancement worker executable (overrides --stage).", "path");
     add("runtime-dir", "NVIDIA runtime directory (overrides --stage).", "dir");
-    add("vsync", "realtime: present with FIFO instead of IMMEDIATE.");
+    add("chain", "Worker stage order with --vsr: vsr-first (default) or nr-first.", "order");
+    add("flow-quality", "NVOFA optical flow preset: fast, medium or slow. Default: chosen by the worker.", "preset");
+    add("no-motion-refine", "Use raw optical flow: no global motion model, guided upsampling or FG fallback.");
+    add("no-fg-fallback", "Keep motion refinement but never blend generated frames back to real pixels.");
+    add("vsync", "realtime: present with FIFO.");
+    add("immediate", "realtime: present with IMMEDIATE even where the GUI would pick MAILBOX.");
     add("window", "realtime: window size.", "WxH", "1280x720");
     parser.process(arguments);
 
@@ -473,6 +480,31 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     o.ffmpeg = parser.value("ffmpeg");
     o.ffprobe = parser.value("ffprobe");
     o.vsync = parser.isSet("vsync");
+    o.immediate = parser.isSet("immediate");
+    // The worker reads these switches from its environment, which it inherits from this process.
+    if (parser.isSet("chain"))
+    {
+        if (parser.value("chain") != "vsr-first" && parser.value("chain") != "nr-first")
+        {
+            qCritical() << "--chain must be vsr-first or nr-first";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_CHAIN", parser.value("chain").toLatin1());
+    }
+    if (parser.isSet("flow-quality"))
+    {
+        const QString preset = parser.value("flow-quality");
+        if (preset != "fast" && preset != "medium" && preset != "slow")
+        {
+            qCritical() << "--flow-quality must be fast, medium or slow";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_QUALITY", preset.toLatin1());
+    }
+    if (parser.isSet("no-motion-refine"))
+        qputenv("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off");
+    if (parser.isSet("no-fg-fallback"))
+        qputenv("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off");
     const auto window = parser.value("window").split('x');
     if (window.size() == 2 && window[0].toInt() > 0 && window[1].toInt() > 0)
     {
@@ -540,6 +572,7 @@ int main(int argc, char **argv)
     if (options.mode != "realtime" && options.frameGeneration && options.decimate == 1)
         qWarning() << "[lab] --decimate 1 leaves no skipped frames: output is produced but cannot be scored";
 
+    options.realIntervalUs = uint64_t(1e6 * options.decimate / sourceFps);
     if (options.vsr && (options.outputWidth < options.width || options.outputHeight < options.height))
     {
         qCritical().noquote() << QStringLiteral("[lab] --output %1x%2 is smaller than the %3x%4 input; VSR only upscales")

@@ -70,7 +70,7 @@ cd release/ngx
 
 ## 配合 VSR 超分
 
-实际串流时如果启用 NVIDIA VSR（例如 1080p 串流超分到 2560x1440 的窗口），管线的顺序是：1080p 输入 → VSR 放大到窗口分辨率 → 在放大后的画面上做 DLSS FG。录像仍然录 **1080p**（它对应 PS5 送来的画面），用 `--vsr` 让实验台走同样的顺序：
+实际串流时如果启用 NVIDIA VSR（例如 1080p 串流超分到 2560x1440 的窗口），管线的默认顺序是：1080p 输入 → VSR 放大到窗口分辨率 →（NR）→ 在放大后的画面上做 DLSS FG；光流始终在 1080p 源画面上计算。录像仍然录 **1080p**（它对应 PS5 送来的画面），用 `--vsr` 让实验台走同样的顺序：
 
 ```powershell
 ./enhancement-video-lab.exe E:\rec\game_120fps.mkv --vsr 4 --output 2560x1440
@@ -99,22 +99,53 @@ cd release/ngx
 - `real frame round trip PSNR` 在不开 NR、VSR 时应为 100（逐位一致）。否则是共享纹理通路的问题，而不是 FG 的问题。
 - 均值掩盖问题，优先看 5% 分位、最小值和最差块；再对照 `motion_psnr` 判断是否只在大幅运动时变差。
 
+## 对比优化开关
+
+本分支的增强进程带有几项可以关掉的优化（见 [VSR 与性能统计](vsr-and-statistics.md)）。实验台把它们做成了参数，不用改代码或重新构建就能逐项对比：
+
+| 参数 | 作用 | 对应环境变量 |
+| --- | --- | --- |
+| `--no-motion-refine` | 使用原始光流：停用全局运动模型、保边上采样和置信度回退 | `CHIAKI_ENHANCEMENT_MOTION_REFINE=off` |
+| `--no-fg-fallback` | 保留运动向量精修，但不把低置信度区域混回真实帧 | `CHIAKI_ENHANCEMENT_FG_FALLBACK=off` |
+| `--flow-quality fast\|medium\|slow` | NVOFA 光流质量档；不指定时 1080p 及以下为 medium | `CHIAKI_ENHANCEMENT_FLOW_QUALITY` |
+| `--chain nr-first` | 配合 `--vsr`：恢复旧顺序（NR 在 VSR 之前）；默认 `vsr-first` | `CHIAKI_ENHANCEMENT_CHAIN` |
+
+`summary.txt` 的 `worker switches` 行和 `history.csv` 的 `worker_switches` 列记录每次运行实际使用的开关。对同一段录像跑一组：
+
+```powershell
+$clip = 'E:\rec\game_120fps.mkv'; $h = 'E:\rec\history.csv'
+./enhancement-video-lab.exe $clip --history $h --label "refine+fallback"
+./enhancement-video-lab.exe $clip --history $h --label "refine only"  --no-fg-fallback
+./enhancement-video-lab.exe $clip --history $h --label "raw flow"     --no-motion-refine
+./enhancement-video-lab.exe $clip --history $h --label "flow slow"    --flow-quality slow
+```
+
+读这组结果时注意：
+
+- 置信度回退会在不可靠区域重复真实帧，所以要同时对照 `psnr_repeat`（重复上一帧的基线）。开启回退后分数若只是向 `psnr_repeat` 靠拢，说明回退触发得太多，画面会有顿挫而不是更准。
+- 回退的目的是消除局部扭曲，主要体现在 `worst_tile_psnr` 和 `worst_*` 图片上，整帧 PSNR 均值可能变化不大。
+- `--flow-quality slow` 的代价看 `summary.txt` 里的光流耗时，再用 `--mode realtime` 确认没有因此丢帧。
+
 ## 调优流程
 
-1. 固定一两段录像，先跑一次并用 `--label baseline --history history.csv` 记录。
-2. 修改增强进程或管线，重新构建（`Build-EnhancementWorker.ps1` / `Build-VideoLab.ps1`）。
+1. 固定三四段不同场景的录像，先按上一节跑出各开关的基线。
+2. 修改增强进程或管线，重新构建（`Build-EnhancementWorker.ps1`），更新 `release/ngx`。
 3. 用相同参数和新的 `--label` 再跑，比较 `history.csv` 中的 PSNR 5% 分位、最差块和增益，并查看 `worst_*` 图片。
 4. 画质没有退步后，用 `--mode realtime` 检查帧间隔的标准差、p99 和迟到次数。
 
-DLSS FG 模型本身是 NVIDIA 的闭源运行库，本项目能调整的是它的输入和调度：
+DLSS FG 模型本身是 NVIDIA 的闭源运行库，本项目能调整的是它的输入、输出后处理和调度：
 
-- `worker.cpp` 中 NVOFA 光流的配置，以及把光流转换为运动向量的 `motionMain` 着色器（`worker_shaders.h.in`）。
+- 运动向量精修的阈值：吸附到全局模型的 0.75 像素、置信度误差 0.06 / 0.14、亮度相似度 0.08。它们目前写在 `worker.cpp`、`motion_model.h` 和 `worker_shaders.h.in` 里，是未经画面对比的初值，改动后需要重新构建增强进程。
+- 全局运动模型的采用条件（至少 35% 采样点一致）和 RANSAC 参数（`motion_model.h`）。
 - 传给 `DLSSG.*` 的参数（运动向量缩放、`MvecDilated`、深度、重置条件等）。
-- `pipeline.cpp` 中各相位的呈现调度（`phaseIntervalMs`、`presentationLimited`）。前两项用 `quality` 模式衡量，这一项用 `realtime` 模式衡量。
+- `pipeline.cpp` 中各相位的呈现调度（微秒级截止时间、间隔平滑、`presentationLimited`）。这一项用 `realtime` 模式衡量，其余用 `quality` 模式衡量。
+
+实时模式的呈现方式与界面一致：关闭垂直同步且启用 FG 时，显示表面支持就用 MAILBOX，否则 IMMEDIATE；`--immediate` 强制 IMMEDIATE，`--vsync` 使用 FIFO。实际选用的方式记录在 `summary.txt`。
 
 ## 验证边界
 
 - 指标计算、真值对齐、ffmpeg 读写、输出文件和失败处理已在 Linux 上通过单元测试和 `dry-run` 端到端测试验证（`ctest`）。
 - `quality` 和 `realtime` 模式接入真实增强进程的部分只做了编译检查，**尚未在 Windows + RTX 上实际运行**。首次使用请先用 `--frames 30` 试跑。
+- 本分支增强进程的优化（VSR 前置、运动向量精修、置信度回退、微秒级排帧）本身也还没有在 RTX 硬件上构建和实测。实验台第一次运行同时也是这些改动的第一次实测，出问题时先用 `--no-motion-refine` 判断是否与它们有关。
 - 抽帧模拟低帧率与真正以低帧率渲染不完全等同（例如逐帧运动模糊的曝光时间不同）。
 - 这里测的是画质和呈现节奏，不包括输入延迟，也不代表显示器的实际扫描输出。

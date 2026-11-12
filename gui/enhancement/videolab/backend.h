@@ -27,7 +27,21 @@ struct LabOptions
     // to outputWidth x outputHeight before frame generation, as in a stream shown on a larger window.
     unsigned vsr = 0;
     int outputWidth = 0, outputHeight = 0;
+    bool immediate = false;        // realtime: never use MAILBOX
+    uint64_t realIntervalUs = 0;   // nominal gap between real frames, filled in after probing
 };
+
+// The worker's experiment switches, read from the environment it inherits.
+inline QString workerSwitches()
+{
+    const auto value = [](const char *name, const char *fallback) {
+        const QString text = qEnvironmentVariable(name);
+        return text.isEmpty() ? QString::fromLatin1(fallback) : text;
+    };
+    return QStringLiteral("chain=%1 flow=%2 motion_refine=%3 fg_fallback=%4")
+        .arg(value("CHIAKI_ENHANCEMENT_CHAIN", "vsr-first"), value("CHIAKI_ENHANCEMENT_FLOW_QUALITY", "auto"),
+             value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "on"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "on"));
+}
 
 // A frame generator under test. One real frame goes in; its generated phases (1-based) and then
 // the real frame (phase 0) come back in display order, followed by frameDone.

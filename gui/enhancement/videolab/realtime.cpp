@@ -73,8 +73,32 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
     }
     pl_vulkan_swapchain_params swapchainParams{};
     swapchainParams.surface = surface;
-    swapchainParams.present_mode = o.vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+    // Same choice as the GUI: with in-app FG and no VSync, MAILBOX when the surface offers it.
+    VkPresentModeKHR presentMode = o.vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
+    if (!o.vsync && !o.immediate && o.frameGeneration)
+    {
+        const auto surfaceModes = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfacePresentModesKHR>(
+            device.instance->get_proc_addr(device.instance->instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"));
+        uint32_t count = 0;
+        if (surfaceModes && surfaceModes(device.vk->phys_device, surface, &count, nullptr) == VK_SUCCESS && count)
+        {
+            std::vector<VkPresentModeKHR> modes(count);
+            const VkResult listed = surfaceModes(device.vk->phys_device, surface, &count, modes.data());
+            if (listed == VK_SUCCESS || listed == VK_INCOMPLETE)
+                for (uint32_t n = 0; n < count && n < modes.size(); ++n)
+                    if (modes[n] == VK_PRESENT_MODE_MAILBOX_KHR)
+                        presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    }
+    swapchainParams.present_mode = presentMode;
     pl_swapchain swapchain = pl_vulkan_create_swapchain(device.vk, &swapchainParams);
+    if (!swapchain && presentMode == VK_PRESENT_MODE_MAILBOX_KHR)
+    {
+        swapchainParams.present_mode = presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        swapchain = pl_vulkan_create_swapchain(device.vk, &swapchainParams);
+    }
+    const char *presentName = presentMode == VK_PRESENT_MODE_FIFO_KHR ? "fifo"
+                              : presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox" : "immediate";
     if (!swapchain)
     {
         qCritical() << "Cannot create a swapchain";
@@ -269,7 +293,8 @@ int runRealtime(const LabOptions &o, const VideoInfo &video)
          << "size: " << o.width << 'x' << o.height << "  source fps: " << sourceFps << "  decimate: " << o.decimate
          << "  simulated stream fps: " << realFps << "\n"
          << "frame generation: " << (o.frameGeneration ? QStringLiteral("%1x").arg(o.multiplier) : QStringLiteral("off"))
-         << "  present mode: " << (o.vsync ? "fifo" : "immediate") << "\n"
+         << "  present mode: " << presentName << "\n"
+         << "worker switches: " << workerSwitches() << "\n"
          << "VSR: " << (o.vsr ? QStringLiteral("quality %1 -> %2x%3%4").arg(o.vsr).arg(o.outputWidth).arg(o.outputHeight)
                                     .arg(vsrSeen ? "" : " (NEVER ACTIVE)") : QStringLiteral("off")) << "\n"
          << "stream frames offered: " << sourceTicks << "  submitted: " << submitted
