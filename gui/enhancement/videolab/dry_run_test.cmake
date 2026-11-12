@@ -1,0 +1,42 @@
+# Drives enhancement-video-lab --mode dry-run on a generated clip and checks its results.
+file(REMOVE_RECURSE "${WORK}")
+file(MAKE_DIRECTORY "${WORK}")
+execute_process(COMMAND "${FFMPEG}" -v error -y -f lavfi -i testsrc2=size=320x180:rate=60 -t 2
+    -c:v libx264 -qp 0 -pix_fmt yuv444p "${WORK}/clip.mkv" RESULT_VARIABLE made)
+if(made)
+    message(STATUS "ffmpeg cannot encode the test clip (no libx264?); skipping")
+    return()
+endif()
+execute_process(COMMAND "${LAB}" --mode dry-run --ffmpeg "${FFMPEG}" --ffprobe "${FFPROBE}"
+    --out "${WORK}/out" --record "${WORK}/out.mkv" --history "${WORK}/history.csv" --worst 2
+    --label "ctest" "${WORK}/clip.mkv" RESULT_VARIABLE ran)
+if(ran)
+    message(FATAL_ERROR "enhancement-video-lab failed with ${ran}")
+endif()
+file(READ "${WORK}/out/summary.txt" summary)
+# 120 source frames at decimate 2: 60 real frames, 59 scored cross-fades.
+if(NOT summary MATCHES "real frames: 60  generated frames: 59")
+    message(FATAL_ERROR "unexpected frame counts:\n${summary}")
+endif()
+if(NOT summary MATCHES "gain over cross-fade dB +mean 0\\.00")
+    message(FATAL_ERROR "the cross-fade generator must score exactly as the cross-fade baseline:\n${summary}")
+endif()
+if(NOT summary MATCHES "round trip PSNR dB: min 100\\.00")
+    message(FATAL_ERROR "real frames changed on the way through:\n${summary}")
+endif()
+file(STRINGS "${WORK}/out/frames.csv" rows)
+list(LENGTH rows count)
+if(NOT count EQUAL 60)
+    message(FATAL_ERROR "frames.csv has ${count} lines, expected 60")
+endif()
+file(GLOB worst "${WORK}/out/worst_*_generated.png")
+list(LENGTH worst count)
+if(NOT count EQUAL 2)
+    message(FATAL_ERROR "expected 2 worst-frame dumps, found ${count}")
+endif()
+execute_process(COMMAND "${FFPROBE}" -v error -count_frames -select_streams v:0
+    -show_entries stream=nb_read_frames -of csv=p=0 "${WORK}/out.mkv" OUTPUT_VARIABLE recorded
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT recorded EQUAL 120)
+    message(FATAL_ERROR "recording has ${recorded} frames, expected 120")
+endif()
