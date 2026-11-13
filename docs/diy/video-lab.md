@@ -105,8 +105,12 @@ cd release/ngx
 
 | 参数 | 作用 | 对应环境变量 |
 | --- | --- | --- |
-| `--no-motion-refine` | 使用原始光流：停用全局运动模型、保边上采样和置信度回退 | `CHIAKI_ENHANCEMENT_MOTION_REFINE=off` |
-| `--no-fg-fallback` | 保留运动向量精修，但不把低置信度区域混回真实帧 | `CHIAKI_ENHANCEMENT_FG_FALLBACK=off` |
+| `--fg-backend flow` | 实验性自建插帧：不调用 DLSS FG，沿光流向量对前后真实帧做运动补偿插值；默认 `dlss` | `CHIAKI_ENHANCEMENT_FG_BACKEND=flow` |
+| `--motion-refine on\|off` | 强制开关向量精修（全局运动模型、中值、保边上采样）。默认仅在 `--fg-backend flow` 时开启 | `CHIAKI_ENHANCEMENT_MOTION_REFINE` |
+| `--no-motion-refine` | 等同 `--motion-refine off` | `CHIAKI_ENHANCEMENT_MOTION_REFINE=off` |
+| `--fg-fallback` | 把 DLSS FG 低置信度区域混回最近真实帧（需精修开启）。默认关闭 | `CHIAKI_ENHANCEMENT_FG_FALLBACK=on` |
+| `--no-fg-fallback` | 显式关闭回退（与默认相同） | `CHIAKI_ENHANCEMENT_FG_FALLBACK=off` |
+| `--fg-vectors zero` | 诊断：给 DLSS FG 全零运动向量，用来确认它对输入向量的依赖程度 | `CHIAKI_ENHANCEMENT_FG_VECTORS=zero` |
 | `--flow-quality fast\|medium\|slow` | NVOFA 光流质量档；不指定时 1080p 及以下为 medium | `CHIAKI_ENHANCEMENT_FLOW_QUALITY` |
 | `--chain nr-first` | 配合 `--vsr`：恢复旧顺序（NR 在 VSR 之前）；默认 `vsr-first` | `CHIAKI_ENHANCEMENT_CHAIN` |
 
@@ -114,9 +118,10 @@ cd release/ngx
 
 ```powershell
 $clip = 'E:\rec\game_120fps.mkv'; $h = 'E:\rec\history.csv'
-./enhancement-video-lab.exe $clip --history $h --label "refine+fallback"
-./enhancement-video-lab.exe $clip --history $h --label "refine only"  --no-fg-fallback
-./enhancement-video-lab.exe $clip --history $h --label "raw flow"     --no-motion-refine
+./enhancement-video-lab.exe $clip --history $h --label "dlss default"
+./enhancement-video-lab.exe $clip --history $h --label "dlss zero vec" --fg-vectors zero
+./enhancement-video-lab.exe $clip --history $h --label "flow backend"  --fg-backend flow
+./enhancement-video-lab.exe $clip --history $h --label "flow raw vec"  --fg-backend flow --motion-refine off
 ./enhancement-video-lab.exe $clip --history $h --label "flow slow"    --flow-quality slow
 ```
 

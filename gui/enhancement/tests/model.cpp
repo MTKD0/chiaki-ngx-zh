@@ -171,7 +171,8 @@ int main()
                 seed = seed * 1664525u + 1013904223u; const double vy = int((seed >> 8) % 801) / 10.0 - 40.0;
                 put(x, y, vx, vy);
             }
-        CHECK(!fitGlobalMotion(grid.data(), gw, gh).valid);
+        const auto rejected = fitGlobalMotion(grid.data(), gw, gh);
+        CHECK(!rejected.valid && rejected.samples > 0 && rejected.inliers * 100 < rejected.samples * 35);
         CHECK(!fitGlobalMotion(nullptr, gw, gh).valid);
     }
     std::puts("Enhancement geometry, VSR input/output, 4x phase identity, global motion fit and IPC validation passed");

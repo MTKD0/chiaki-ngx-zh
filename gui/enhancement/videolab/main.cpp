@@ -415,8 +415,13 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("runtime-dir", "NVIDIA runtime directory (overrides --stage).", "dir");
     add("chain", "Worker stage order with --vsr: vsr-first (default) or nr-first.", "order");
     add("flow-quality", "NVOFA optical flow preset: fast, medium or slow. Default: chosen by the worker.", "preset");
-    add("no-motion-refine", "Use raw optical flow: no global motion model, guided upsampling or FG fallback.");
-    add("no-fg-fallback", "Keep motion refinement but never blend generated frames back to real pixels.");
+    add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
+    add("no-fg-fallback", "Never blend DLSS FG output back to real pixels (the worker default).");
+    add("motion-refine", "Force vector refinement on or off. Default: on only with --fg-backend flow.", "on|off");
+    add("fg-fallback", "Blend low-confidence DLSS FG regions back to the nearest real frame (needs refinement on).");
+    add("fg-backend", "dlss (default) or flow: the worker's experimental flow-based interpolation.", "name");
+    add("fg-vectors", "flow (default) or zero: feed DLSS FG zero motion vectors, to measure how much it uses them.",
+        "source");
     add("vsync", "realtime: present with FIFO.");
     add("immediate", "realtime: present with IMMEDIATE even where the GUI would pick MAILBOX.");
     add("window", "realtime: window size.", "WxH", "1280x720");
@@ -505,6 +510,35 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
         qputenv("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off");
     if (parser.isSet("no-fg-fallback"))
         qputenv("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off");
+    if (parser.isSet("motion-refine"))
+    {
+        if (parser.value("motion-refine") != "on" && parser.value("motion-refine") != "off")
+        {
+            qCritical() << "--motion-refine must be on or off";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_MOTION_REFINE", parser.value("motion-refine").toLatin1());
+    }
+    if (parser.isSet("fg-fallback"))
+        qputenv("CHIAKI_ENHANCEMENT_FG_FALLBACK", "on");
+    if (parser.isSet("fg-backend"))
+    {
+        if (parser.value("fg-backend") != "dlss" && parser.value("fg-backend") != "flow")
+        {
+            qCritical() << "--fg-backend must be dlss or flow";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FG_BACKEND", parser.value("fg-backend").toLatin1());
+    }
+    if (parser.isSet("fg-vectors"))
+    {
+        if (parser.value("fg-vectors") != "flow" && parser.value("fg-vectors") != "zero")
+        {
+            qCritical() << "--fg-vectors must be flow or zero";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FG_VECTORS", parser.value("fg-vectors").toLatin1());
+    }
     const auto window = parser.value("window").split('x');
     if (window.size() == 2 && window[0].toInt() > 0 && window[1].toInt() > 0)
     {

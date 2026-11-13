@@ -345,7 +345,7 @@ struct Gpu
         // Motion refinement is optional: a failure here keeps the plain vector path.
         try
         {
-            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain"})
+            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "interpolateMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -914,11 +914,21 @@ struct Worker
     std::array<Texture, MaxGeneratedFrames> fgPrivate;
     Gpu::Readback thumbnailReadback, vectorReadback;
     bool motionRefine = false, fgFallback = false, previousRealValid = false;
-    static bool disabledByEnvironment(const wchar_t *name)
+    // flowBackend: generated frames come from interpolateMain instead of DLSS FG.
+    // zeroVectors: diagnostic, DLSS FG receives zero motion vectors.
+    bool flowBackend = false, zeroVectors = false, keepPreviousReal = false;
+    static bool environmentIs(const wchar_t *name, const wchar_t *expected)
     {
-        wchar_t value[8] = {};
-        const DWORD length = GetEnvironmentVariableW(name, value, 8);
-        return length && length < 8 && (_wcsicmp(value, L"off") == 0 || _wcsicmp(value, L"0") == 0);
+        wchar_t value[16] = {};
+        const DWORD length = GetEnvironmentVariableW(name, value, 16);
+        return length && length < 16 && _wcsicmp(value, expected) == 0;
+    }
+    // 1 = on, 0 = off, -1 = not set (or unrecognised): the caller's default applies.
+    static int environmentSwitch(const wchar_t *name)
+    {
+        if (environmentIs(name, L"on") || environmentIs(name, L"1")) return 1;
+        if (environmentIs(name, L"off") || environmentIs(name, L"0")) return 0;
+        return -1;
     }
     std::vector<uint8_t> previousThumbnail, previousRealPixels;
     Command config{};
@@ -1117,22 +1127,33 @@ struct Worker
         }
         // CHIAKI_ENHANCEMENT_MOTION_REFINE=off restores the plain flow vectors;
         // CHIAKI_ENHANCEMENT_FG_FALLBACK=off keeps refinement but never repeats real pixels.
-        motionRefine = optical && gpu->refineShaders &&
-                       !disabledByEnvironment(L"CHIAKI_ENHANCEMENT_MOTION_REFINE");
+        // Defaults follow the recorded-clip comparison: refined vectors did not change
+        // DLSS FG output measurably and the real-frame fallback lowered it, so both are
+        // opt-in. The flow backend consumes the vectors directly and refines by default.
+        //   CHIAKI_ENHANCEMENT_FG_BACKEND=flow       experimental flow interpolation
+        //   CHIAKI_ENHANCEMENT_MOTION_REFINE=on|off  override vector refinement
+        //   CHIAKI_ENHANCEMENT_FG_FALLBACK=on        DLSS FG output mixed back to real frames
+        //   CHIAKI_ENHANCEMENT_FG_VECTORS=zero       diagnostic: DLSS FG gets zero vectors
+        flowBackend = fg && gpu->refineShaders && environmentIs(L"CHIAKI_ENHANCEMENT_FG_BACKEND", L"flow");
+        zeroVectors = fg && !flowBackend && environmentIs(L"CHIAKI_ENHANCEMENT_FG_VECTORS", L"zero");
+        const int refineSwitch = environmentSwitch(L"CHIAKI_ENHANCEMENT_MOTION_REFINE");
+        motionRefine = optical && gpu->refineShaders && (refineSwitch < 0 ? flowBackend : refineSwitch == 1);
         if (motionRefine)
         {
             refinedFlow = gpu->texture(optical->vectors.width, optical->vectors.height, DXGI_FORMAT_R16G16_FLOAT);
             flowConfidence = gpu->texture(optical->vectors.width, optical->vectors.height, DXGI_FORMAT_R8_UNORM);
         }
-        fgFallback = motionRefine && fg && !disabledByEnvironment(L"CHIAKI_ENHANCEMENT_FG_FALLBACK");
-        if (fgFallback)
-        {
+        fgFallback = motionRefine && fg && !flowBackend &&
+                     environmentSwitch(L"CHIAKI_ENHANCEMENT_FG_FALLBACK") == 1;
+        keepPreviousReal = fgFallback || flowBackend;
+        if (keepPreviousReal)
             previousReal = gpu->texture(c.width, c.height);
+        if (fgFallback)
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
                 fgPrivate[n] = gpu->texture(c.width, c.height);
-        }
         previousRealValid = false;
-        std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u\n", unsigned(motionRefine), unsigned(fgFallback));
+        std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s\n",
+            unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow");
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1264,8 +1285,8 @@ struct Worker
         }
         QueryPerformanceCounter(&flowEnd);
         if (motionRefine && (reset || c.frameId % 120 == 0))
-            std::fprintf(stderr, "[RTX][Motion] global_valid=%u inliers=%u/%u pan=%.2f,%.2f\n",
-                unsigned(global.valid), global.inliers, global.samples, global.a[0], global.b[0]);
+            std::fprintf(stderr, "[RTX][Motion] global_valid=%u agreeing=%u/%u pan=%.2f,%.2f zoom=%.2f,%.2f\n",
+                unsigned(global.valid), global.inliers, global.samples, global.a[0], global.b[0], global.a[1], global.b[2]);
         gpu->begin();
         for (unsigned k = 0; k < MaxNrPasses * 4 + 4; ++k)
             gpu->mark(k);
@@ -1441,6 +1462,8 @@ struct Worker
         {
             // Source-resolution flow vectors, expressed in output pixels.
             motionVectors(fullMotion, float(c.width) / inputSize.width, float(c.height) / inputSize.height);
+            if (zeroVectors)
+                gpu->run("zeroMain", nullptr, fullMotion);
             gpu->run("zeroMain", nullptr, fullDepth);
             gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1505,6 +1528,18 @@ struct Worker
             // With the fallback active, FG writes private textures and the shared outputs
             // receive the confidence-weighted mix with the nearest real frame.
             const bool fallback = fgFallback && previousRealValid && !reset;
+            if (flowBackend)
+            {
+                // No DLSS evaluation: every phase is interpolated along the flow vectors.
+                // A reset frame has no usable pair; its generated outputs are not presented.
+                if (previousRealValid && !reset)
+                    for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
+                        const float phase[8] = {float(n + 1) / float(c.fgMultiplier), 0.06f, 0.20f, 0, 0, 0, 0, 0};
+                        gpu->run("interpolateMain", &previousReal, s.generatedFrame(n), processed, &fullMotion,
+                                 nullptr, 0, 1, 1, phase);
+                    }
+            }
+            else
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
                 Texture &fgTarget = fallback ? fgPrivate[n] : s.generatedFrame(n);
                 gpu->transition(fgTarget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1523,7 +1558,7 @@ struct Worker
             if (!history)
                 std::fprintf(stderr, "[RTX][FG] EvaluateFeature returned\n");
         }
-        if (fgFallback)
+        if (keepPreviousReal)
         {
             gpu->copy(s.real, previousReal);
             previousRealValid = true;

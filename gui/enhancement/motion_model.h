@@ -17,7 +17,7 @@ struct GlobalMotion
 {
     float a[3] = {0, 0, 0}, b[3] = {0, 0, 0};
     bool valid = false;
-    unsigned inliers = 0, samples = 0;
+    unsigned inliers = 0, samples = 0; // inliers: refit set when valid, else the best RANSAC agreement
 };
 namespace motion_detail
 {
@@ -120,7 +120,10 @@ inline GlobalMotion fitGlobalMotion(const uint8_t *vectors, unsigned width, unsi
         }
     }
     if (best * 100 < count * 35)
+    {
+        result.inliers = best; // Reported for diagnostics; the model stays invalid.
         return result;
+    }
     double normal[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, rx[3] = {0, 0, 0}, ry[3] = {0, 0, 0};
     unsigned inliers = 0;
     for (unsigned n = 0; n < count; ++n)

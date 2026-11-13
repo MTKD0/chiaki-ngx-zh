@@ -38,9 +38,11 @@ inline QString workerSwitches()
         const QString text = qEnvironmentVariable(name);
         return text.isEmpty() ? QString::fromLatin1(fallback) : text;
     };
-    return QStringLiteral("chain=%1 flow=%2 motion_refine=%3 fg_fallback=%4")
+    // Worker defaults: refinement only with the flow backend ("auto"), fallback off.
+    return QStringLiteral("chain=%1 flow=%2 motion_refine=%3 fg_fallback=%4 fg_backend=%5 fg_vectors=%6")
         .arg(value("CHIAKI_ENHANCEMENT_CHAIN", "vsr-first"), value("CHIAKI_ENHANCEMENT_FLOW_QUALITY", "auto"),
-             value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "on"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "on"));
+             value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "auto"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off"),
+             value("CHIAKI_ENHANCEMENT_FG_BACKEND", "dlss"), value("CHIAKI_ENHANCEMENT_FG_VECTORS", "flow"));
 }
 
 // A frame generator under test. One real frame goes in; its generated phases (1-based) and then

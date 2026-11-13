@@ -126,6 +126,35 @@ float2 flowAt(int2 q, int2 limit) {
     float3 real = b.Load(int3(p.xy,0)).rgb;
     target[p.xy] = float4(lerp(real,generated,confidence),1);
 }
+// Experimental flow-based interpolation (CHIAKI_ENHANCEMENT_FG_BACKEND=flow).
+// a = previous real, b = current real, c = motion in output pixels (current ->
+// previous). extraA = (t, consistent below, inconsistent above), t in (0,1) from the
+// previous to the current frame. Both frames are sampled along the same motion
+// path; where they disagree (occlusion, wrong vector) or one sample leaves the
+// frame, the motion-compensated sample of the temporally nearer / in-frame image
+// is used instead of a blend or an uncompensated copy.
+[numthreads(8,8,1)] void interpolateMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float t = extraA.x;
+    float2 size = float2(outputSize);
+    float2 x = p.xy+0.5;
+    // The vector field lives on the current frame: iterate to the vector of the
+    // surface that passes through this pixel at time t.
+    float2 g = c.SampleLevel(clampSampler,x/size,0).xy;
+    for(int k=0;k<2;++k) g = c.SampleLevel(clampSampler,(x-(1.0-t)*g)/size,0).xy;
+    float2 fromCurrent = (x-(1.0-t)*g)/size;
+    float2 fromPrevious = (x+t*g)/size;
+    float3 current = b.SampleLevel(clampSampler,fromCurrent,0).rgb;
+    float3 previous = a.SampleLevel(clampSampler,fromPrevious,0).rgb;
+    bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
+    bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
+    float mismatch = dot(abs(current-previous),float3(0.299,0.587,0.114));
+    float nearer = t >= 0.5 ? 1.0 : 0.0;
+    float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
+    if(currentInside && !previousInside) w = 1.0;
+    if(previousInside && !currentInside) w = 0.0;
+    target[p.xy] = float4(lerp(previous,current,w),1);
+}
 [numthreads(8,8,1)] void residualMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float4 native = a.Load(int3(p.xy,0));
