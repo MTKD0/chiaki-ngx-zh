@@ -112,6 +112,7 @@ cd release/ngx
 | `--no-fg-fallback` | 显式关闭回退（与默认相同） | `CHIAKI_ENHANCEMENT_FG_FALLBACK=off` |
 | `--fg-vectors zero` | 诊断：给 DLSS FG 全零运动向量，用来确认它对输入向量的依赖程度 | `CHIAKI_ENHANCEMENT_FG_VECTORS=zero` |
 | `--flow-quality fast\|medium\|slow` | NVOFA 光流质量档；不指定时 1080p 及以下为 medium | `CHIAKI_ENHANCEMENT_FLOW_QUALITY` |
+| `--flow-scale 0.5` | 光流分辨率相对输入的比例（0.25–1，默认 1）。缩小后可跟踪更大的位移，向量更粗 | `CHIAKI_ENHANCEMENT_FLOW_SCALE` |
 | `--chain nr-first` | 配合 `--vsr`：恢复旧顺序（NR 在 VSR 之前）；默认 `vsr-first` | `CHIAKI_ENHANCEMENT_CHAIN` |
 
 `summary.txt` 的 `worker switches` 行和 `history.csv` 的 `worker_switches` 列记录每次运行实际使用的开关。对同一段录像跑一组：

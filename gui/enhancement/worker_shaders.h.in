@@ -128,32 +128,71 @@ float2 flowAt(int2 q, int2 limit) {
 }
 // Experimental flow-based interpolation (CHIAKI_ENHANCEMENT_FG_BACKEND=flow).
 // a = previous real, b = current real, c = motion in output pixels (current ->
-// previous). extraA = (t, consistent below, inconsistent above), t in (0,1) from the
-// previous to the current frame. Both frames are sampled along the same motion
-// path; where they disagree (occlusion, wrong vector) or one sample leaves the
-// frame, the motion-compensated sample of the temporally nearer / in-frame image
-// is used instead of a blend or an uncompensated copy.
+// previous). extraA = (t, consistent below, inconsistent above, hypothesis margin),
+// extraB.x = dead zone in pixels; t in (0,1) from the previous to the current frame.
+//
+// Two hypotheses are compared per pixel by their photometric error between the
+// two real frames: "moved along the flow vector" and "did not move". Recorded
+// clips showed that always trusting the vector loses to a plain cross-fade on
+// slow or static content (vector noise plus resampling blur) and tears into
+// blobs where the flow fails on fast motion; the cheaper hypothesis wins softly,
+// so a failed vector degrades to a cross-fade instead.
+// 9-tap Catmull-Rom through 3x3 bilinear fetches: keeps moved detail sharp.
+float3 sampleSharp(Texture2D<float4> image, float2 uv, float2 size) {
+    float2 position = uv*size;
+    float2 base = floor(position-0.5)+0.5;
+    float2 f = position-base;
+    float2 w0 = f*(-0.5+f*(1.0-0.5*f));
+    float2 w1 = 1.0+f*f*(-2.5+1.5*f);
+    float2 w2 = f*(0.5+f*(2.0-1.5*f));
+    float2 w3 = f*f*(-0.5+0.5*f);
+    float2 w12 = w1+w2;
+    float2 p0 = (base-1.0)/size;
+    float2 p3 = (base+2.0)/size;
+    float2 p12 = (base+w2/w12)/size;
+    float3 r = image.SampleLevel(clampSampler,float2(p0.x,p0.y),0).rgb*(w0.x*w0.y);
+    r += image.SampleLevel(clampSampler,float2(p12.x,p0.y),0).rgb*(w12.x*w0.y);
+    r += image.SampleLevel(clampSampler,float2(p3.x,p0.y),0).rgb*(w3.x*w0.y);
+    r += image.SampleLevel(clampSampler,float2(p0.x,p12.y),0).rgb*(w0.x*w12.y);
+    r += image.SampleLevel(clampSampler,float2(p12.x,p12.y),0).rgb*(w12.x*w12.y);
+    r += image.SampleLevel(clampSampler,float2(p3.x,p12.y),0).rgb*(w3.x*w12.y);
+    r += image.SampleLevel(clampSampler,float2(p0.x,p3.y),0).rgb*(w0.x*w3.y);
+    r += image.SampleLevel(clampSampler,float2(p12.x,p3.y),0).rgb*(w12.x*w3.y);
+    r += image.SampleLevel(clampSampler,float2(p3.x,p3.y),0).rgb*(w3.x*w3.y);
+    return saturate(r);
+}
 [numthreads(8,8,1)] void interpolateMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float t = extraA.x;
     float2 size = float2(outputSize);
     float2 x = p.xy+0.5;
+    float3 luma = float3(0.299,0.587,0.114);
     // The vector field lives on the current frame: iterate to the vector of the
     // surface that passes through this pixel at time t.
     float2 g = c.SampleLevel(clampSampler,x/size,0).xy;
     for(int k=0;k<2;++k) g = c.SampleLevel(clampSampler,(x-(1.0-t)*g)/size,0).xy;
+    float3 current0 = b.Load(int3(p.xy,0)).rgb;
+    float3 previous0 = a.Load(int3(p.xy,0)).rgb;
+    float3 held = lerp(previous0,current0,t);
+    // Sub-threshold vectors are estimation noise on static content.
+    if(dot(g,g) < extraB.x*extraB.x) { target[p.xy] = float4(held,1); return; }
     float2 fromCurrent = (x-(1.0-t)*g)/size;
     float2 fromPrevious = (x+t*g)/size;
-    float3 current = b.SampleLevel(clampSampler,fromCurrent,0).rgb;
-    float3 previous = a.SampleLevel(clampSampler,fromPrevious,0).rgb;
+    float3 current = sampleSharp(b,fromCurrent,size);
+    float3 previous = sampleSharp(a,fromPrevious,size);
     bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
     bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
-    float mismatch = dot(abs(current-previous),float3(0.299,0.587,0.114));
+    float mismatch = dot(abs(current-previous),luma);
+    float still = dot(abs(current0-previous0),luma);
+    // Within the moved hypothesis: blend when both samples agree, otherwise the
+    // compensated sample of the temporally nearer (or the only in-frame) image.
     float nearer = t >= 0.5 ? 1.0 : 0.0;
     float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
-    if(currentInside && !previousInside) w = 1.0;
-    if(previousInside && !currentInside) w = 0.0;
-    target[p.xy] = float4(lerp(previous,current,w),1);
+    float useHeld = smoothstep(-extraA.w,2.0*extraA.w,mismatch-still);
+    if(currentInside && !previousInside) { w = 1.0; useHeld = 0.0; }
+    if(previousInside && !currentInside) { w = 0.0; useHeld = 0.0; }
+    float3 moved = lerp(previous,current,w);
+    target[p.xy] = float4(lerp(moved,held,useHeld),1);
 }
 [numthreads(8,8,1)] void residualMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;

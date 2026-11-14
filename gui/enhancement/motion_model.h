@@ -62,7 +62,10 @@ inline double tolerance2(const Sample &s)
 
 // `vectors` is the tightly packed NVOFA output: width*height pairs of int16 in
 // S10.5 fixed point. Deterministic RANSAC followed by a least-squares refit.
-// The model is reported only when at least 35% of the sampled grid agrees, so a
+// The model is reported only when at least 20% of the sampled grid agrees (recorded
+// 3D scenes with parallax agree at a median of 16%, rarely above 35%). Only vectors
+// that already agree with the model are snapped to it by the shader, so a
+// minority model cannot bend the rest of the frame. Below the threshold a
 // scene dominated by independent motion keeps its local vectors.
 inline GlobalMotion fitGlobalMotion(const uint8_t *vectors, unsigned width, unsigned height)
 {
@@ -119,7 +122,7 @@ inline GlobalMotion fitGlobalMotion(const uint8_t *vectors, unsigned width, unsi
             for (int k = 0; k < 3; ++k) { bestA[k] = a[k]; bestB[k] = b[k]; }
         }
     }
-    if (best * 100 < count * 35)
+    if (best * 100 < count * 20)
     {
         result.inliers = best; // Reported for diagnostics; the model stays invalid.
         return result;

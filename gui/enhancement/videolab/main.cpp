@@ -415,6 +415,7 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("runtime-dir", "NVIDIA runtime directory (overrides --stage).", "dir");
     add("chain", "Worker stage order with --vsr: vsr-first (default) or nr-first.", "order");
     add("flow-quality", "NVOFA optical flow preset: fast, medium or slow. Default: chosen by the worker.", "preset");
+    add("flow-scale", "Optical flow resolution relative to the input, 0.25-1. Smaller follows larger motion.", "factor");
     add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
     add("no-fg-fallback", "Never blend DLSS FG output back to real pixels (the worker default).");
     add("motion-refine", "Force vector refinement on or off. Default: on only with --fg-backend flow.", "on|off");
@@ -505,6 +506,16 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
             return false;
         }
         qputenv("CHIAKI_ENHANCEMENT_FLOW_QUALITY", preset.toLatin1());
+    }
+    if (parser.isSet("flow-scale"))
+    {
+        const double factor = parser.value("flow-scale").toDouble();
+        if (!(factor >= 0.25 && factor <= 1.0))
+        {
+            qCritical() << "--flow-scale must be between 0.25 and 1";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_SCALE", QByteArray::number(factor, 'f', 3));
     }
     if (parser.isSet("no-motion-refine"))
         qputenv("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off");

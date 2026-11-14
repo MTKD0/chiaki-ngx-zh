@@ -15,6 +15,7 @@
 #include "worker_shaders.h"
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -917,6 +918,24 @@ struct Worker
     // flowBackend: generated frames come from interpolateMain instead of DLSS FG.
     // zeroVectors: diagnostic, DLSS FG receives zero motion vectors.
     bool flowBackend = false, zeroVectors = false, keepPreviousReal = false;
+    // Optical flow resolution. CHIAKI_ENHANCEMENT_FLOW_SCALE (0.25-1, default 1) shrinks
+    // it: the search then covers proportionally larger motion and motion blur
+    // matters less, at the price of coarser vectors.
+    Extent flowSize{};
+    static Extent scaledFlowExtent(Extent input)
+    {
+        wchar_t value[16] = {};
+        const DWORD length = GetEnvironmentVariableW(L"CHIAKI_ENHANCEMENT_FLOW_SCALE", value, 16);
+        double scale = length && length < 16 ? _wtof(value) : 1.0;
+        if (!(scale >= 0.25 && scale <= 1.0))
+            scale = 1.0;
+        Extent result;
+        result.width = std::max(64u, (static_cast<unsigned>(input.width * scale + 0.5) + 1u) & ~1u);
+        result.height = std::max(64u, (static_cast<unsigned>(input.height * scale + 0.5) + 1u) & ~1u);
+        result.width = std::min(result.width, input.width);
+        result.height = std::min(result.height, input.height);
+        return result;
+    }
     static bool environmentIs(const wchar_t *name, const wchar_t *expected)
     {
         wchar_t value[16] = {};
@@ -1107,9 +1126,11 @@ struct Worker
             try
             {
                 optical.reset(new OpticalFlow);
-                const auto level = flowLevel(inputSize);
-                optical->init(*gpu, inputSize.width, inputSize.height, level);
-                std::fprintf(stderr, "[RTX][Flow] size=%ux%u perf_level=%d\n", inputSize.width, inputSize.height, int(level));
+                flowSize = scaledFlowExtent(inputSize);
+                const auto level = flowLevel(flowSize);
+                optical->init(*gpu, flowSize.width, flowSize.height, level);
+                std::fprintf(stderr, "[RTX][Flow] size=%ux%u input=%ux%u perf_level=%d\n", flowSize.width, flowSize.height,
+                    inputSize.width, inputSize.height, int(level));
             }
             catch (const std::exception &e)
             {
@@ -1366,7 +1387,7 @@ struct Worker
                     modelInput = &stage.proxy;
                 }
                 gpu->run("scaleMain", modelInput, reduced);
-                motionVectors(motion, float(reduced.width) / inputSize.width, float(reduced.height) / inputSize.height);
+                motionVectors(motion, float(reduced.width) / flowSize.width, float(reduced.height) / flowSize.height);
                 gpu->run("zeroMain", nullptr, depth);
                 gpu->transition(reduced, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 gpu->transition(motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1461,7 +1482,7 @@ struct Worker
         if (fg)
         {
             // Source-resolution flow vectors, expressed in output pixels.
-            motionVectors(fullMotion, float(c.width) / inputSize.width, float(c.height) / inputSize.height);
+            motionVectors(fullMotion, float(c.width) / flowSize.width, float(c.height) / flowSize.height);
             if (zeroVectors)
                 gpu->run("zeroMain", nullptr, fullMotion);
             gpu->run("zeroMain", nullptr, fullDepth);
@@ -1534,7 +1555,8 @@ struct Worker
                 // A reset frame has no usable pair; its generated outputs are not presented.
                 if (previousRealValid && !reset)
                     for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
-                        const float phase[8] = {float(n + 1) / float(c.fgMultiplier), 0.06f, 0.20f, 0, 0, 0, 0, 0};
+                        // t, agreement thresholds (luma, 0..1), hypothesis margin; dead zone in pixels.
+                        const float phase[8] = {float(n + 1) / float(c.fgMultiplier), 0.06f, 0.20f, 0.01f, 0.2f, 0, 0, 0};
                         gpu->run("interpolateMain", &previousReal, s.generatedFrame(n), processed, &fullMotion,
                                  nullptr, 0, 1, 1, phase);
                     }

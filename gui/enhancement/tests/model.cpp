@@ -172,7 +172,7 @@ int main()
                 put(x, y, vx, vy);
             }
         const auto rejected = fitGlobalMotion(grid.data(), gw, gh);
-        CHECK(!rejected.valid && rejected.samples > 0 && rejected.inliers * 100 < rejected.samples * 35);
+        CHECK(!rejected.valid && rejected.samples > 0 && rejected.inliers * 100 < rejected.samples * 20);
         CHECK(!fitGlobalMotion(nullptr, gw, gh).valid);
     }
     std::puts("Enhancement geometry, VSR input/output, 4x phase identity, global motion fit and IPC validation passed");
