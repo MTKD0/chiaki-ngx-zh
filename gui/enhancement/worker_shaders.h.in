@@ -8,6 +8,9 @@ Texture2D<float4> c : register(t2);
 Texture2D<float4> d : register(t3);
 Texture2D<int2> optical : register(t4);
 RWTexture2D<float4> target : register(u0);
+// Integer views of the same slots, used only by the projection passes below.
+Texture2D<uint> bitsIn : register(t0);
+RWTexture2D<uint> targetBits : register(u0);
 SamplerState clampSampler : register(s0);
 cbuffer Params : register(b0) {
     uint2 sourceSize; uint2 outputSize;
@@ -231,7 +234,166 @@ float3 sampleSharp(Texture2D<float4> image, float2 uv, float2 size) {
     if(previousInside && !currentInside) w = 0.0;
     target[p.xy] = float4(lerp(previous,current,w),1);
 }
-// Default flow interpolation ("direct"): the field vector followed to this pixel,
+// ---------------------------------------------------------------------------
+// Projected flow interpolation (default of the flow backend). Developed offline
+// against the worker's dumped NVOFA grids and the recorded 120 fps truth frames;
+// docs/diy/vsr-and-statistics.md has the numbers.
+//
+// The vector field is defined on the current frame. For an intermediate frame it
+// is projected forward to time t on the flow grid instead of being looked up
+// through the field itself:
+//   matchMain    error of every grid vector between the two real frames. Vectors
+//                without a real match (content that just entered the frame, the
+//                revealed side of an occlusion) are dropped.
+//   splatMain    each surviving vector is written to the cell it reaches at time
+//                t; where several land, the best match wins (atomic minimum).
+//   resolveMain  packed winner -> vector in output pixels, with a validity flag.
+//   fillMain     holes take the motion of their valid neighbours, coarse to fine:
+//                the surface next to a revealed region moves on into it.
+//   medianFieldMain removes single-cell outliers.
+//   heldMain / weightMain compare "moved" against "did not move" on blocks and
+//                blur the decision, so it is spatially stable (a per-pixel
+//                decision speckled thin structures).
+//   interpolateProjectedMain samples both frames along the vector.
+static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.25,0.25),float2(0.25,0.25)};
+// a = previous real, b = current real (output size), optical = raw grid.
+// vectorScale = output pixels per flow pixel. Output r = error, 1 for invalid.
+[numthreads(8,8,1)] void matchMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 raw = optical.Load(int3(p.xy,0));
+    if(raw.x == -32768 || raw.y == -32768) { target[p.xy] = float4(1,0,0,0); return; }
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    float2 x = (p.xy+0.5)*cell;
+    float2 v = float2(raw)/32.0*vectorScale;
+    float e = 0;
+    for(int k=0;k<4;++k) {
+        float2 q = x+quad[k]*cell;
+        e += dot(abs(b.SampleLevel(clampSampler,q/size,0).rgb-a.SampleLevel(clampSampler,(q+v)/size,0).rgb),
+                 float3(0.299,0.587,0.114));
+    }
+    target[p.xy] = float4(e*0.25,0,0,0);
+}
+[numthreads(8,8,1)] void clearBitsMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    targetBits[p.xy] = 0xFFFFFFFFu;
+}
+// a = matchMain's output, optical = raw grid. extraA = (t, error threshold,
+// grid cells per flow pixel x, y). Packed value: 12-bit error, 20-bit source cell.
+[numthreads(8,8,1)] void splatMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 raw = optical.Load(int3(p.xy,0));
+    if(raw.x == -32768 || raw.y == -32768) return;
+    float e = a.Load(int3(p.xy,0)).r;
+    if(e >= extraA.y) return;
+    float2 cells = float2(raw)/32.0*extraA.zw;
+    int2 q = int2(floor(float2(p.xy)+(1.0-extraA.x)*cells+0.5));
+    if(any(q < 0) || any(q >= int2(outputSize))) return;
+    uint packed = (uint(min(e,1.0)*4095.0+0.5) << 20) | (p.y*outputSize.x+p.x);
+    InterlockedMin(targetBits[q],packed);
+}
+// bitsIn = splat result, optical = raw grid, vectorScale = output pixels per flow
+// pixel. Output xy = vector in output pixels, z = 1 where a vector landed.
+[numthreads(8,8,1)] void resolveMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    uint packed = bitsIn.Load(int3(p.xy,0));
+    if(packed == 0xFFFFFFFFu) { target[p.xy] = float4(0,0,0,0); return; }
+    uint index = packed & 0xFFFFFu;
+    int2 source = int2(index % outputSize.x,index / outputSize.x);
+    target[p.xy] = float4(float2(optical.Load(int3(source,0)))/32.0*vectorScale,1,0);
+}
+// a = field. extraA.x = stride in cells.
+[numthreads(8,8,1)] void fillMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float4 v = a.Load(int3(p.xy,0));
+    if(v.z > 0.5) { target[p.xy] = v; return; }
+    int stride = int(extraA.x);
+    int2 limit = int2(outputSize)-1;
+    float2 sum = float2(0,0);
+    float count = 0;
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i) {
+        if(i == 0 && j == 0) continue;
+        float4 n = a.Load(int3(clamp(int2(p.xy)+int2(i,j)*stride,int2(0,0),limit),0));
+        if(n.z > 0.5) { sum += n.xy; count += 1.0; }
+    }
+    target[p.xy] = count > 0.0 ? float4(sum/count,1,0) : float4(0,0,0,0);
+}
+[numthreads(8,8,1)] void medianFieldMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 limit = int2(outputSize)-1;
+    float2 v[9];
+    for(int j=0;j<3;++j) for(int i=0;i<3;++i)
+        v[j*3+i] = a.Load(int3(clamp(int2(p.xy)+int2(i-1,j-1),int2(0,0),limit),0)).xy;
+    SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
+    SORT2(v[0],v[1]) SORT2(v[3],v[4]) SORT2(v[6],v[7])
+    SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
+    SORT2(v[0],v[3]) SORT2(v[5],v[8]) SORT2(v[4],v[7])
+    SORT2(v[3],v[6]) SORT2(v[1],v[4]) SORT2(v[2],v[5])
+    SORT2(v[4],v[7]) SORT2(v[4],v[2]) SORT2(v[6],v[4])
+    SORT2(v[4],v[2])
+    target[p.xy] = float4(v[4],1,0);
+}
+// a = previous real, b = current real, c = field (grid). extraA.x = t.
+// Output r = block error along the vector, g = block error without motion.
+[numthreads(8,8,1)] void heldMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float t = extraA.x;
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    float2 x = (p.xy+0.5)*cell;
+    float2 g = c.Load(int3(p.xy,0)).xy;
+    float3 luma = float3(0.299,0.587,0.114);
+    float moved = 0, still = 0;
+    for(int k=0;k<4;++k) {
+        float2 q = x+quad[k]*cell;
+        moved += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*g)/size,0).rgb-
+                         a.SampleLevel(clampSampler,(q+t*g)/size,0).rgb),luma);
+        still += dot(abs(b.SampleLevel(clampSampler,q/size,0).rgb-a.SampleLevel(clampSampler,q/size,0).rgb),luma);
+    }
+    target[p.xy] = float4(moved*0.25,still*0.25,0,0);
+}
+// a = heldMain's output, b = field. extraA.w = margin. Output xy = vector,
+// z = weight of the "did not move" result (3x3 blurred decision).
+[numthreads(8,8,1)] void weightMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 limit = int2(outputSize)-1;
+    float2 e = float2(0,0);
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i)
+        e += a.Load(int3(clamp(int2(p.xy)+int2(i,j),int2(0,0),limit),0)).xy;
+    e /= 9.0;
+    target[p.xy] = float4(b.Load(int3(p.xy,0)).xy,smoothstep(-extraA.w,2.0*extraA.w,e.x-e.y),0);
+}
+// a = previous real, b = current real, c = weightMain's output (grid).
+// extraA = (t, consistent below, inconsistent above), extraB.x > 0.5 = Catmull-Rom.
+[numthreads(8,8,1)] void interpolateProjectedMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float t = extraA.x;
+    float2 size = float2(outputSize);
+    float2 x = p.xy+0.5;
+    float4 field = c.SampleLevel(clampSampler,x/size,0);
+    float2 g = field.xy;
+    float2 fromCurrent = (x-(1.0-t)*g)/size;
+    float2 fromPrevious = (x+t*g)/size;
+    float3 current, previous;
+    if(extraB.x > 0.5) {
+        current = sampleSharp(b,fromCurrent,size);
+        previous = sampleSharp(a,fromPrevious,size);
+    } else {
+        current = b.SampleLevel(clampSampler,fromCurrent,0).rgb;
+        previous = a.SampleLevel(clampSampler,fromPrevious,0).rgb;
+    }
+    bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
+    bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
+    float mismatch = dot(abs(current-previous),float3(0.299,0.587,0.114));
+    float nearer = t >= 0.5 ? 1.0 : 0.0;
+    float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
+    float useHeld = field.z;
+    if(currentInside && !previousInside) { w = 1.0; useHeld = 0.0; }
+    if(previousInside && !currentInside) { w = 0.0; useHeld = 0.0; }
+    float3 held = lerp(a.Load(int3(p.xy,0)).rgb,b.Load(int3(p.xy,0)).rgb,t);
+    target[p.xy] = float4(lerp(lerp(previous,current,w),held,useHeld),1);
+}
+// Earlier flow interpolation ("direct"): the field vector followed to this pixel,
 // with a per-pixel choice between "moved along the vector" and "did not move".
 // On the recorded clips this scored above the candidate selection, which broke
 // contours where a wrong surface happened to have a low photometric error.

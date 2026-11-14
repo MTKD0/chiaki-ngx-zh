@@ -416,8 +416,8 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("chain", "Worker stage order with --vsr: vsr-first (default) or nr-first.", "order");
     add("flow-quality", "NVOFA optical flow preset: fast, medium or slow. Default: chosen by the worker.", "preset");
     add("flow-scale", "Optical flow resolution relative to the input, 0.25-1. Smaller follows larger motion.", "factor");
-    add("flow-select", "Flow backend variant: direct (default) or candidates (half-resolution vector selection).",
-        "variant");
+    add("flow-select", "Flow backend variant: projected (default), direct or candidates.", "variant");
+    add("flow-bilinear", "Flow backend: sample moved pixels bilinearly instead of Catmull-Rom.");
     add("dump-flow", "Write the worker's raw optical-flow grids (.s16) into this directory.", "dir");
     add("dump-range", "Worker frame ids to dump with --dump-flow, as first-last.", "range");
     add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
@@ -523,13 +523,16 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     }
     if (parser.isSet("flow-select"))
     {
-        if (parser.value("flow-select") != "direct" && parser.value("flow-select") != "candidates")
+        if (parser.value("flow-select") != "projected" && parser.value("flow-select") != "direct" &&
+            parser.value("flow-select") != "candidates")
         {
-            qCritical() << "--flow-select must be direct or candidates";
+            qCritical() << "--flow-select must be projected, direct or candidates";
             return false;
         }
         qputenv("CHIAKI_ENHANCEMENT_FLOW_SELECT", parser.value("flow-select").toLatin1());
     }
+    if (parser.isSet("flow-bilinear"))
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_SHARP", "off");
     if (parser.isSet("dump-flow"))
     {
         const QDir directory(parser.value("dump-flow"));

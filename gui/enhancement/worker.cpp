@@ -223,6 +223,8 @@ struct Gpu
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     unsigned descriptorSize = 0, descriptorCursor = 0;
+    // Six descriptors per dispatch; the projected flow backend records about 45 per frame.
+    static constexpr unsigned DescriptorCapacity = 1536;
     std::map<std::string, ComPtr<ID3D12PipelineState>> shaders;
 
     explicit Gpu(uint64_t luid)
@@ -317,7 +319,7 @@ struct Gpu
                                           IID_PPV_ARGS(&root)),
               "CreateRootSignature");
         D3D12_DESCRIPTOR_HEAP_DESC hd{};
-        hd.NumDescriptors = 256;
+        hd.NumDescriptors = DescriptorCapacity;
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&descriptors)),
@@ -346,7 +348,9 @@ struct Gpu
         // Motion refinement is optional: a failure here keeps the plain vector path.
         try
         {
-            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain"})
+            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain",
+                                      "matchMain", "clearBitsMain", "splatMain", "resolveMain", "fillMain",
+                                      "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -464,7 +468,7 @@ struct Gpu
              Texture *third = nullptr, Texture *flow = nullptr, float sharpness = 0, float sx = 1,
              float sy = 1, const float *extra = nullptr)
     {
-        if (descriptorCursor + 6 > 256)
+        if (descriptorCursor + 6 > DescriptorCapacity)
             throw std::runtime_error("Descriptor capacity exceeded");
         auto cpu = descriptors->GetCPUDescriptorHandleForHeapStart();
         cpu.ptr += descriptorCursor * descriptorSize;
@@ -913,6 +917,10 @@ struct Worker
     // the estimate is unreliable.
     Texture refinedFlow, flowConfidence, previousReal;
     Texture selectedVectors; // flow backend: per-phase vector choice at half the output size
+    // Projected flow backend, all at the flow grid's size: match error of every grid
+    // vector, packed splat winners, two ping-pong vector fields and the block errors.
+    Texture matchError, splatBits, fieldA, fieldB, errorPair;
+    bool flowProjected = false, flowSharp = true;
     std::array<Texture, MaxGeneratedFrames> fgPrivate;
     Gpu::Readback thumbnailReadback, vectorReadback;
     bool motionRefine = false, fgFallback = false, previousRealValid = false;
@@ -1197,7 +1205,26 @@ struct Worker
         }
         fgFallback = motionRefine && fg && !flowBackend &&
                      environmentSwitch(L"CHIAKI_ENHANCEMENT_FG_FALLBACK") == 1;
+        // CHIAKI_ENHANCEMENT_FLOW_SELECT=projected (default) | direct | candidates.
+        // CHIAKI_ENHANCEMENT_FLOW_SHARP=off samples bilinearly instead of Catmull-Rom.
         flowCandidates = flowBackend && environmentIs(L"CHIAKI_ENHANCEMENT_FLOW_SELECT", L"candidates");
+        flowProjected = flowBackend && !flowCandidates && !environmentIs(L"CHIAKI_ENHANCEMENT_FLOW_SELECT", L"direct");
+        flowSharp = environmentSwitch(L"CHIAKI_ENHANCEMENT_FLOW_SHARP") != 0;
+        if (flowProjected)
+        {
+            const unsigned gw = optical->vectors.width, gh = optical->vectors.height;
+            // The splat packs the source cell into 20 bits.
+            if (static_cast<uint64_t>(gw) * gh >= (1u << 20))
+                flowProjected = false;
+            else
+            {
+                matchError = gpu->texture(gw, gh, DXGI_FORMAT_R16_FLOAT);
+                splatBits = gpu->texture(gw, gh, DXGI_FORMAT_R32_UINT);
+                fieldA = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                fieldB = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                errorPair = gpu->texture(gw, gh, DXGI_FORMAT_R16G16_FLOAT);
+            }
+        }
         if (optical)
             readDumpSettings();
         keepPreviousReal = fgFallback || flowBackend;
@@ -1212,7 +1239,7 @@ struct Worker
         previousRealValid = false;
         std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s flow_select=%s\n",
             unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow",
-            flowCandidates ? "candidates" : "direct");
+            flowProjected ? "projected" : flowCandidates ? "candidates" : "direct");
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1606,9 +1633,42 @@ struct Worker
             {
                 // No DLSS evaluation: every phase is interpolated along the flow vectors.
                 // A reset frame has no usable pair; its generated outputs are not presented.
+                const float outputPerFlowX = float(c.width) / flowSize.width;
+                const float outputPerFlowY = float(c.height) / flowSize.height;
+                if (flowProjected && previousRealValid && !reset)
+                    gpu->run("matchMain", &previousReal, matchError, processed, nullptr, &optical->vectors, 0,
+                             outputPerFlowX, outputPerFlowY);
                 if (previousRealValid && !reset)
                     for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
                         const float t = float(n + 1) / float(c.fgMultiplier);
+                        if (flowProjected)
+                        {
+                            // Vectors matching worse than 0.10 (mean absolute luma, 0..1) are dropped.
+                            const float splat[8] = {t, 0.10f, float(matchError.width) / flowSize.width,
+                                                    float(matchError.height) / flowSize.height, 0, 0, 0, 0};
+                            gpu->run("clearBitsMain", nullptr, splatBits);
+                            gpu->run("splatMain", &matchError, splatBits, nullptr, nullptr, &optical->vectors, 0, 1, 1, splat);
+                            gpu->run("resolveMain", &splatBits, fieldA, nullptr, nullptr, &optical->vectors, 0,
+                                     outputPerFlowX, outputPerFlowY);
+                            Texture *field = &fieldA, *spare = &fieldB;
+                            for (float stride : {32.0f, 16.0f, 8.0f, 4.0f, 2.0f, 1.0f, 1.0f})
+                            {
+                                const float step[8] = {stride, 0, 0, 0, 0, 0, 0, 0};
+                                gpu->run("fillMain", field, *spare, nullptr, nullptr, nullptr, 0, 1, 1, step);
+                                std::swap(field, spare);
+                            }
+                            gpu->run("medianFieldMain", field, *spare);
+                            std::swap(field, spare);
+                            const float moment[8] = {t, 0, 0, 0, 0, 0, 0, 0};
+                            gpu->run("heldMain", &previousReal, errorPair, processed, field, nullptr, 0, 1, 1, moment);
+                            const float margin[8] = {0, 0, 0, 0.01f, 0, 0, 0, 0};
+                            gpu->run("weightMain", &errorPair, *spare, field, nullptr, nullptr, 0, 1, 1, margin);
+                            std::swap(field, spare);
+                            const float last[8] = {t, 0.06f, 0.20f, 0, flowSharp ? 1.0f : 0.0f, 0, 0, 0};
+                            gpu->run("interpolateProjectedMain", &previousReal, s.generatedFrame(n), processed, field,
+                                     nullptr, 0, 1, 1, last);
+                            continue;
+                        }
                         // Candidate radii scale with the output; 0.004 is the margin by which
                         // "did not move" is favoured, 0.12 the error assumed outside the frame.
                         if (!flowCandidates)

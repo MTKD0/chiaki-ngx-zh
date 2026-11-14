@@ -113,7 +113,8 @@ cd release/ngx
 | `--fg-vectors zero` | 诊断：给 DLSS FG 全零运动向量，用来确认它对输入向量的依赖程度 | `CHIAKI_ENHANCEMENT_FG_VECTORS=zero` |
 | `--flow-quality fast\|medium\|slow` | NVOFA 光流质量档；不指定时 1080p 及以下为 medium | `CHIAKI_ENHANCEMENT_FLOW_QUALITY` |
 | `--flow-scale 0.5` | 光流分辨率相对输入的比例（0.25–1，默认 1）。缩小后可跟踪更大的位移，向量更粗 | `CHIAKI_ENHANCEMENT_FLOW_SCALE` |
-| `--flow-select candidates` | 自建后端改用半分辨率候选向量选择；默认 `direct`（逐像素两假设） | `CHIAKI_ENHANCEMENT_FLOW_SELECT` |
+| `--flow-select projected\|direct\|candidates` | 自建后端的插值方式。默认 `projected`（向量前向投影）；`direct` 为逐像素两假设，`candidates` 为半分辨率候选选择 | `CHIAKI_ENHANCEMENT_FLOW_SELECT` |
+| `--flow-bilinear` | 自建后端的补偿取样改用双线性（默认 Catmull-Rom 双三次，更锐但 PSNR 略低） | `CHIAKI_ENHANCEMENT_FLOW_SHARP=off` |
 | `--dump-flow <目录> --dump-range 首-尾` | 诊断：把指定帧号范围内增强进程的原始光流网格写成 `flow_<帧号>_<宽>x<高>.s16` | `CHIAKI_ENHANCEMENT_DUMP_FLOW`、`CHIAKI_ENHANCEMENT_DUMP_RANGE` |
 | `--chain nr-first` | 配合 `--vsr`：恢复旧顺序（NR 在 VSR 之前）；默认 `vsr-first` | `CHIAKI_ENHANCEMENT_CHAIN` |
 

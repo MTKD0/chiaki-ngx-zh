@@ -43,7 +43,8 @@ inline QString workerSwitches()
         .arg(value("CHIAKI_ENHANCEMENT_CHAIN", "vsr-first"), value("CHIAKI_ENHANCEMENT_FLOW_QUALITY", "auto"),
              value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off"),
              value("CHIAKI_ENHANCEMENT_FG_BACKEND", "dlss"), value("CHIAKI_ENHANCEMENT_FG_VECTORS", "flow"),
-             value("CHIAKI_ENHANCEMENT_FLOW_SCALE", "1"), value("CHIAKI_ENHANCEMENT_FLOW_SELECT", "direct"));
+             value("CHIAKI_ENHANCEMENT_FLOW_SCALE", "1"), value("CHIAKI_ENHANCEMENT_FLOW_SELECT", "projected")) +
+           QStringLiteral(" flow_sharp=%1").arg(value("CHIAKI_ENHANCEMENT_FLOW_SHARP", "on"));
 }
 
 // A frame generator under test. One real frame goes in; its generated phases (1-based) and then
