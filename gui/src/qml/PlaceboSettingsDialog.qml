@@ -1213,7 +1213,14 @@ DialogView {
                     }
                 }
             }
-            EnhancementSettings { enabled: Chiaki.window.rtxSettingsSupported }
+            // Keep the ScrollView at the viewport size. Its natural content height
+            // must not become StackLayout's minimum height and hide the FG controls.
+            Item {
+                EnhancementSettings {
+                    anchors.fill: parent
+                    enabled: Chiaki.window.rtxSettingsSupported
+                }
+            }
             EyeCandySettings { }
         }
     }
