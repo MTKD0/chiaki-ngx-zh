@@ -346,7 +346,7 @@ struct Gpu
         // Motion refinement is optional: a failure here keeps the plain vector path.
         try
         {
-            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain"})
+            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -919,6 +919,34 @@ struct Worker
     // flowBackend: generated frames come from interpolateMain instead of DLSS FG.
     // zeroVectors: diagnostic, DLSS FG receives zero motion vectors.
     bool flowBackend = false, zeroVectors = false, keepPreviousReal = false;
+    // Flow backend variant: false = direct (default), true = candidate selection
+    // (CHIAKI_ENHANCEMENT_FLOW_SELECT=candidates).
+    bool flowCandidates = false;
+    // Diagnostics: CHIAKI_ENHANCEMENT_DUMP_FLOW=<directory> writes the raw optical-flow
+    // grid of frames CHIAKI_ENHANCEMENT_DUMP_RANGE=<first>-<last> (worker frame ids) as
+    // flow_<frame>_<width>x<height>.s16: row-major pairs of int16, S10.5 pixels at the
+    // flow resolution, pointing from the current frame to the previous one.
+    fs::path dumpDirectory;
+    uint64_t dumpFirst = 0, dumpLast = 0;
+    void readDumpSettings()
+    {
+        wchar_t directory[1024] = {}, range[64] = {};
+        const DWORD length = GetEnvironmentVariableW(L"CHIAKI_ENHANCEMENT_DUMP_FLOW", directory, 1024);
+        if (!length || length >= 1024)
+            return;
+        dumpDirectory = directory;
+        dumpFirst = 0;
+        dumpLast = 0;
+        const DWORD rangeLength = GetEnvironmentVariableW(L"CHIAKI_ENHANCEMENT_DUMP_RANGE", range, 64);
+        if (rangeLength && rangeLength < 64)
+        {
+            wchar_t *end = nullptr;
+            dumpFirst = _wcstoui64(range, &end, 10);
+            dumpLast = end && *end == L'-' ? _wcstoui64(end + 1, nullptr, 10) : dumpFirst;
+        }
+        std::fprintf(stderr, "[RTX][Dump] flow frames %llu-%llu\n",
+            static_cast<unsigned long long>(dumpFirst), static_cast<unsigned long long>(dumpLast));
+    }
     // Optical flow resolution. CHIAKI_ENHANCEMENT_FLOW_SCALE (0.25-1, default 1) shrinks
     // it: the search then covers proportionally larger motion and motion blur
     // matters less, at the price of coarser vectors.
@@ -1169,6 +1197,9 @@ struct Worker
         }
         fgFallback = motionRefine && fg && !flowBackend &&
                      environmentSwitch(L"CHIAKI_ENHANCEMENT_FG_FALLBACK") == 1;
+        flowCandidates = flowBackend && environmentIs(L"CHIAKI_ENHANCEMENT_FLOW_SELECT", L"candidates");
+        if (optical)
+            readDumpSettings();
         keepPreviousReal = fgFallback || flowBackend;
         if (keepPreviousReal)
             previousReal = gpu->texture(c.width, c.height);
@@ -1179,8 +1210,9 @@ struct Worker
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
                 fgPrivate[n] = gpu->texture(c.width, c.height);
         previousRealValid = false;
-        std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s\n",
-            unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow");
+        std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s flow_select=%s\n",
+            unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow",
+            flowCandidates ? "candidates" : "direct");
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1298,6 +1330,21 @@ struct Worker
             optical->execute(*gpu, reset);
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] optical-flow completed\n");
+        }
+        if (optical && !dumpDirectory.empty() && c.frameId >= dumpFirst && c.frameId <= dumpLast)
+        {
+            // Diagnostic only: an extra submission and a file write on the selected frames.
+            gpu->begin();
+            gpu->queueReadback(vectorReadback, optical->vectors);
+            gpu->submit();
+            const auto grid = gpu->readback(vectorReadback, optical->vectors);
+            const fs::path file = dumpDirectory / ("flow_" + std::to_string(c.frameId) + "_" +
+                std::to_string(optical->vectors.width) + "x" + std::to_string(optical->vectors.height) + ".s16");
+            std::ofstream out(file, std::ios::binary);
+            out.write(reinterpret_cast<const char *>(grid.data()), static_cast<std::streamsize>(grid.size()));
+            std::fprintf(stderr, "[RTX][Dump] frame=%llu reset=%u flow=%ux%u input=%ux%u output=%ux%u written=%u\n",
+                static_cast<unsigned long long>(c.frameId), unsigned(reset), optical->vectors.width, optical->vectors.height,
+                inputSize.width, inputSize.height, c.width, c.height, unsigned(bool(out)));
         }
         // Camera motion is fitted on the CPU from the small flow grid. A reset frame
         // has no meaningful flow and keeps the model invalid.
@@ -1564,6 +1611,14 @@ struct Worker
                         const float t = float(n + 1) / float(c.fgMultiplier);
                         // Candidate radii scale with the output; 0.004 is the margin by which
                         // "did not move" is favoured, 0.12 the error assumed outside the frame.
+                        if (!flowCandidates)
+                        {
+                            // t, agreement thresholds (luma, 0..1), hypothesis margin; dead zone in pixels.
+                            const float direct[8] = {t, 0.06f, 0.20f, 0.01f, 0.2f, 0, 0, 0};
+                            gpu->run("interpolateDirectMain", &previousReal, s.generatedFrame(n), processed, &fullMotion,
+                                     nullptr, 0, 1, 1, direct);
+                            continue;
+                        }
                         const float reach = float(c.height) / 1080.0f;
                         const float select[8] = {t, 0, 0, 0.004f, 16.0f * reach, 64.0f * reach, 0.12f, 0};
                         gpu->run("selectMain", &previousReal, selectedVectors, processed, &fullMotion,

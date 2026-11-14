@@ -416,6 +416,10 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("chain", "Worker stage order with --vsr: vsr-first (default) or nr-first.", "order");
     add("flow-quality", "NVOFA optical flow preset: fast, medium or slow. Default: chosen by the worker.", "preset");
     add("flow-scale", "Optical flow resolution relative to the input, 0.25-1. Smaller follows larger motion.", "factor");
+    add("flow-select", "Flow backend variant: direct (default) or candidates (half-resolution vector selection).",
+        "variant");
+    add("dump-flow", "Write the worker's raw optical-flow grids (.s16) into this directory.", "dir");
+    add("dump-range", "Worker frame ids to dump with --dump-flow, as first-last.", "range");
     add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
     add("no-fg-fallback", "Never blend DLSS FG output back to real pixels (the worker default).");
     add("motion-refine", "Force vector refinement on or off. Default: off.", "on|off");
@@ -516,6 +520,26 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
             return false;
         }
         qputenv("CHIAKI_ENHANCEMENT_FLOW_SCALE", QByteArray::number(factor, 'f', 3));
+    }
+    if (parser.isSet("flow-select"))
+    {
+        if (parser.value("flow-select") != "direct" && parser.value("flow-select") != "candidates")
+        {
+            qCritical() << "--flow-select must be direct or candidates";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_SELECT", parser.value("flow-select").toLatin1());
+    }
+    if (parser.isSet("dump-flow"))
+    {
+        const QDir directory(parser.value("dump-flow"));
+        if (!QDir().mkpath(directory.absolutePath()))
+        {
+            qCritical() << "--dump-flow directory cannot be created";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_DUMP_FLOW", QDir::toNativeSeparators(directory.absolutePath()).toLocal8Bit());
+        qputenv("CHIAKI_ENHANCEMENT_DUMP_RANGE", parser.value("dump-range").toLatin1());
     }
     if (parser.isSet("no-motion-refine"))
         qputenv("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off");

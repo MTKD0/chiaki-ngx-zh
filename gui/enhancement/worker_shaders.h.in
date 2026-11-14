@@ -231,6 +231,42 @@ float3 sampleSharp(Texture2D<float4> image, float2 uv, float2 size) {
     if(previousInside && !currentInside) w = 0.0;
     target[p.xy] = float4(lerp(previous,current,w),1);
 }
+// Default flow interpolation ("direct"): the field vector followed to this pixel,
+// with a per-pixel choice between "moved along the vector" and "did not move".
+// On the recorded clips this scored above the candidate selection, which broke
+// contours where a wrong surface happened to have a low photometric error.
+// a = previous real, b = current real, c = motion in output pixels (current ->
+// previous). extraA = (t, consistent below, inconsistent above, hypothesis margin),
+// extraB.x = dead zone in pixels.
+[numthreads(8,8,1)] void interpolateDirectMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float t = extraA.x;
+    float2 size = float2(outputSize);
+    float2 x = p.xy+0.5;
+    float3 luma = float3(0.299,0.587,0.114);
+    float2 g = c.SampleLevel(clampSampler,x/size,0).xy;
+    for(int k=0;k<2;++k) g = c.SampleLevel(clampSampler,(x-(1.0-t)*g)/size,0).xy;
+    float3 current0 = b.Load(int3(p.xy,0)).rgb;
+    float3 previous0 = a.Load(int3(p.xy,0)).rgb;
+    float3 held = lerp(previous0,current0,t);
+    // Sub-threshold vectors are estimation noise on static content.
+    if(dot(g,g) < extraB.x*extraB.x) { target[p.xy] = float4(held,1); return; }
+    float2 fromCurrent = (x-(1.0-t)*g)/size;
+    float2 fromPrevious = (x+t*g)/size;
+    float3 current = sampleSharp(b,fromCurrent,size);
+    float3 previous = sampleSharp(a,fromPrevious,size);
+    bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
+    bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
+    float mismatch = dot(abs(current-previous),luma);
+    float still = dot(abs(current0-previous0),luma);
+    float nearer = t >= 0.5 ? 1.0 : 0.0;
+    float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
+    float useHeld = smoothstep(-extraA.w,2.0*extraA.w,mismatch-still);
+    if(currentInside && !previousInside) { w = 1.0; useHeld = 0.0; }
+    if(previousInside && !currentInside) { w = 0.0; useHeld = 0.0; }
+    float3 moved = lerp(previous,current,w);
+    target[p.xy] = float4(lerp(moved,held,useHeld),1);
+}
 [numthreads(8,8,1)] void residualMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float4 native = a.Load(int3(p.xy,0));
