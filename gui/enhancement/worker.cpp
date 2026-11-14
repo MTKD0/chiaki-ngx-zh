@@ -1040,6 +1040,7 @@ struct Worker
         exportedHandles.push_back(handle);
         return reinterpret_cast<uint64_t>(handle);
     }
+    bool hasFg() const { return bool(fg) || flowBackend; }
     Reply configure(const Command &c, const fs::path &dir)
     {
         config = c;
@@ -1142,7 +1143,12 @@ struct Worker
             fgError = "HDR frame generation is not enabled; HDR NR remains available";
             std::fprintf(stderr, "[RTX][FG] %s\n", fgError.c_str());
         }
-        if ((c.flags & FrameGeneration) && !hdr)
+        if ((c.flags & FrameGeneration) && !hdr && (c.flags & Afg)) {
+            flowBackend = gpu->refineShaders;
+            if (!flowBackend) fgError = "AFG shaders are unavailable; ordinary streaming retained";
+            std::fprintf(stderr, "[RTX][AFG] requested=%ux available=%u (no DLSS FG runtime)\n", c.fgMultiplier, unsigned(flowBackend));
+        }
+        if ((c.flags & FrameGeneration) && !hdr && !(c.flags & Afg))
         {
             try
             {
@@ -1176,7 +1182,7 @@ struct Worker
                 std::fprintf(stderr, "[RTX][FG] %s\n", e.what());
             }
         }
-        if (hasNr() || fg)
+        if (hasNr() || hasFg())
         {
             try
             {
@@ -1223,26 +1229,29 @@ struct Worker
                 nrError = fgError = e.what();
                 clearNr();
                 fg.reset();
+                flowBackend = false;
                 opticalBack.reset();
                 optical.reset();
             }
         }
-        if (fg)
+        if (hasFg())
         {
             fullMotion = gpu->texture(c.width, c.height, DXGI_FORMAT_R16G16_FLOAT);
-            fullDepth = gpu->texture(c.width, c.height, DXGI_FORMAT_R32_FLOAT);
-            fgReal = gpu->texture(c.width, c.height);
+            if (fg) {
+                fullDepth = gpu->texture(c.width, c.height, DXGI_FORMAT_R32_FLOAT);
+                fgReal = gpu->texture(c.width, c.height);
+            }
         }
         // CHIAKI_ENHANCEMENT_MOTION_REFINE=off restores the plain flow vectors;
         // CHIAKI_ENHANCEMENT_FG_FALLBACK=off keeps refinement but never repeats real pixels.
         // Defaults follow the recorded-clip comparison: refined vectors did not change
         // DLSS FG output measurably and the real-frame fallback lowered it, so both are
-        // opt-in. The flow backend consumes the vectors directly and refines by default.
-        //   CHIAKI_ENHANCEMENT_FG_BACKEND=flow       experimental flow interpolation
+        // opt-in. AFG consumes the optical flow vectors directly.
+        // AFG is selected via IPC; the video lab maps --fg-backend flow to this flag.
         //   CHIAKI_ENHANCEMENT_MOTION_REFINE=on|off  override vector refinement
         //   CHIAKI_ENHANCEMENT_FG_FALLBACK=on        DLSS FG output mixed back to real frames
         //   CHIAKI_ENHANCEMENT_FG_VECTORS=zero       diagnostic: DLSS FG gets zero vectors
-        flowBackend = fg && gpu->refineShaders && environmentIs(L"CHIAKI_ENHANCEMENT_FG_BACKEND", L"flow");
+        // AFG is selected by the versioned IPC flag, independently of DLSS.
         zeroVectors = fg && !flowBackend && environmentIs(L"CHIAKI_ENHANCEMENT_FG_VECTORS", L"zero");
         const int refineSwitch = environmentSwitch(L"CHIAKI_ENHANCEMENT_MOTION_REFINE");
         // Refinement is opt-in for both backends: with candidate selection in the flow
@@ -1301,8 +1310,8 @@ struct Worker
             for (unsigned n = 1; (c.flags & FrameGeneration) && !hdr && n < c.fgMultiplier - 1; ++n)
                 reply.resources[i].additionalGenerated[n - 1] = exportHandle(s.generatedFrame(n).resource.Get());
         }
-        reply.generatedCount = fg ? c.fgMultiplier - 1 : 0;
-        reply.activeFlags = (hasNr() ? Neural : 0) | (fg ? FrameGeneration : 0) | (vsr ? Vsr : 0) | (c.flags & BridgeTest);
+        reply.generatedCount = hasFg() ? c.fgMultiplier - 1 : 0;
+        reply.activeFlags = (hasNr() ? Neural : 0) | (hasFg() ? FrameGeneration : 0) | (vsr ? Vsr : 0) | (c.flags & BridgeTest);
         std::string message = "GPU bridge ready";
         if (!nrError.empty())
             message += "; NR: " + nrError;
@@ -1629,70 +1638,72 @@ struct Worker
         else gpu->copy(*processed, s.real);
         processed = &s.real;
 
-        if (fg)
+        if (hasFg())
         {
             // Source-resolution flow vectors, expressed in output pixels.
             motionVectors(fullMotion, float(c.width) / flowSize.width, float(c.height) / flowSize.height);
             if (zeroVectors)
                 gpu->run("zeroMain", nullptr, fullMotion);
-            gpu->run("zeroMain", nullptr, fullDepth);
+            if (fg) gpu->run("zeroMain", nullptr, fullDepth);
             gpu->transition(*processed, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             gpu->transition(fullMotion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            gpu->transition(fullDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (fg) gpu->transition(fullDepth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
                 gpu->transition(s.generatedFrame(n), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            gpu->transition(fgReal, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            fg->resource("DLSSG.Backbuffer", *processed);
-            fg->resource("DLSSG.HUDLess", *processed);
-            fg->resource("DLSSG.MVecs", fullMotion);
-            fg->resource("DLSSG.Depth", fullDepth);
-            fg->resource("DLSSG.OutputInterpolated", s.generated);
-            fg->resource("DLSSG.OutputReal", fgReal);
-            auto &p = fg->parameters;
-            p.Set("DLSSG.Reset", reset ? 1u : 0u);
-            p.Set("DLSSG.MvecScaleX", 1.0f);
-            p.Set("DLSSG.MvecScaleY", 1.0f);
-            p.Set("DLSSG.DepthInverted", 1u);
-            p.Set("DLSSG.MultiFrameCount", c.fgMultiplier - 1);
-            p.Set("DLSSG.MultiFrameIndex", 1u);
-            p.Set("DLSSG.BackbufferFrameID", static_cast<unsigned long long>(++fgFrameId));
-            p.Set("DLSSG.CameraMotionIncluded", 1u);
-            p.Set("DLSSG.CameraNear", 0.1f);
-            p.Set("DLSSG.CameraFar", 1000.0f);
-            p.Set("DLSSG.CameraFOV", 1.0472f);
-            p.Set("DLSSG.CameraAspectRatio", float(c.width) / c.height);
-            p.Set("DLSSG.InputBackbufferSubrectBaseX", 0u);
-            p.Set("DLSSG.InputBackbufferSubrectBaseY", 0u);
-            p.Set("DLSSG.InputBackbufferSubrectWidth", c.width);
-            p.Set("DLSSG.InputBackbufferSubrectHeight", c.height);
-            p.Set("DLSSG.MvecScaleX", 1.0f / c.width);
-            p.Set("DLSSG.MvecScaleY", 1.0f / c.height);
-            p.Set("DLSSG.MvecInvalidValue", 3.402823466e+38f);
-            p.Set("DLSSG.MvecDilated", 1u);
-            p.Set("DLSSG.MvecJittered", 0u);
-            p.Set("DLSSG.LinearizedDepth_Scale", 1.0f);
-            p.Set("DLSSG.LinearizedDepth_NearFarPartition", 1.0f);
-            p.Set("DLSSG.NoWarp", static_cast<ID3D12Resource *>(nullptr));
-            float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-            for (const char *key :
-                 {"DLSSG.CameraViewToClip", "DLSSG.ClipToCameraView", "DLSSG.ClipToPrevClip",
-                  "DLSSG.PrevClipToClip", "DLSSG.ClipToLensClip"})
-                p.Set(key, static_cast<void *>(identity));
-            for (const char *key : {"DLSSG.CameraPosX", "DLSSG.CameraPosY", "DLSSG.CameraPosZ",
-                                    "DLSSG.CameraRightY", "DLSSG.CameraRightZ", "DLSSG.CameraUpX",
-                                    "DLSSG.CameraUpZ", "DLSSG.CameraFwdX", "DLSSG.CameraFwdY"})
-                p.Set(key, 0.0f);
-            for (const char *key : {"DLSSG.CameraRightX", "DLSSG.CameraUpY", "DLSSG.CameraFwdZ"})
-                p.Set(key, 1.0f);
-            p.Set("DLSSG.OutputDisableInterpolation", static_cast<ID3D12Resource *>(nullptr));
-            p.Set("DLSSG.UI", static_cast<ID3D12Resource *>(nullptr));
-            p.Set("DLSSG.UIAlpha", static_cast<ID3D12Resource *>(nullptr));
-            p.Set("DLSSG.BidirectionalDistortionField", static_cast<ID3D12Resource *>(nullptr));
-            p.Set("DLSSG.CmdQueue", static_cast<void *>(gpu->queue.Get()));
-            p.Set("DLSSG.CmdAlloc", static_cast<void *>(gpu->allocator.Get()));
-            p.Set("DLSSG.FenceEvent", gpu->event.h);
+            if (fg) {
+                gpu->transition(fgReal, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                fg->resource("DLSSG.Backbuffer", *processed);
+                fg->resource("DLSSG.HUDLess", *processed);
+                fg->resource("DLSSG.MVecs", fullMotion);
+                fg->resource("DLSSG.Depth", fullDepth);
+                fg->resource("DLSSG.OutputInterpolated", s.generated);
+                fg->resource("DLSSG.OutputReal", fgReal);
+                auto &p = fg->parameters;
+                p.Set("DLSSG.Reset", reset ? 1u : 0u);
+                p.Set("DLSSG.MvecScaleX", 1.0f);
+                p.Set("DLSSG.MvecScaleY", 1.0f);
+                p.Set("DLSSG.DepthInverted", 1u);
+                p.Set("DLSSG.MultiFrameCount", c.fgMultiplier - 1);
+                p.Set("DLSSG.MultiFrameIndex", 1u);
+                p.Set("DLSSG.BackbufferFrameID", static_cast<unsigned long long>(++fgFrameId));
+                p.Set("DLSSG.CameraMotionIncluded", 1u);
+                p.Set("DLSSG.CameraNear", 0.1f);
+                p.Set("DLSSG.CameraFar", 1000.0f);
+                p.Set("DLSSG.CameraFOV", 1.0472f);
+                p.Set("DLSSG.CameraAspectRatio", float(c.width) / c.height);
+                p.Set("DLSSG.InputBackbufferSubrectBaseX", 0u);
+                p.Set("DLSSG.InputBackbufferSubrectBaseY", 0u);
+                p.Set("DLSSG.InputBackbufferSubrectWidth", c.width);
+                p.Set("DLSSG.InputBackbufferSubrectHeight", c.height);
+                p.Set("DLSSG.MvecScaleX", 1.0f / c.width);
+                p.Set("DLSSG.MvecScaleY", 1.0f / c.height);
+                p.Set("DLSSG.MvecInvalidValue", 3.402823466e+38f);
+                p.Set("DLSSG.MvecDilated", 1u);
+                p.Set("DLSSG.MvecJittered", 0u);
+                p.Set("DLSSG.LinearizedDepth_Scale", 1.0f);
+                p.Set("DLSSG.LinearizedDepth_NearFarPartition", 1.0f);
+                p.Set("DLSSG.NoWarp", static_cast<ID3D12Resource *>(nullptr));
+                float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+                for (const char *key :
+                     {"DLSSG.CameraViewToClip", "DLSSG.ClipToCameraView", "DLSSG.ClipToPrevClip",
+                      "DLSSG.PrevClipToClip", "DLSSG.ClipToLensClip"})
+                    p.Set(key, static_cast<void *>(identity));
+                for (const char *key : {"DLSSG.CameraPosX", "DLSSG.CameraPosY", "DLSSG.CameraPosZ",
+                                        "DLSSG.CameraRightY", "DLSSG.CameraRightZ", "DLSSG.CameraUpX",
+                                        "DLSSG.CameraUpZ", "DLSSG.CameraFwdX", "DLSSG.CameraFwdY"})
+                    p.Set(key, 0.0f);
+                for (const char *key : {"DLSSG.CameraRightX", "DLSSG.CameraUpY", "DLSSG.CameraFwdZ"})
+                    p.Set(key, 1.0f);
+                p.Set("DLSSG.OutputDisableInterpolation", static_cast<ID3D12Resource *>(nullptr));
+                p.Set("DLSSG.UI", static_cast<ID3D12Resource *>(nullptr));
+                p.Set("DLSSG.UIAlpha", static_cast<ID3D12Resource *>(nullptr));
+                p.Set("DLSSG.BidirectionalDistortionField", static_cast<ID3D12Resource *>(nullptr));
+                p.Set("DLSSG.CmdQueue", static_cast<void *>(gpu->queue.Get()));
+                p.Set("DLSSG.CmdAlloc", static_cast<void *>(gpu->allocator.Get()));
+                p.Set("DLSSG.FenceEvent", gpu->event.h);
+            }
             if (!history)
-                std::fprintf(stderr, "[RTX][FG] first EvaluateFeature begin\n");
+                std::fprintf(stderr, "[RTX][FG] first %s begin\n", flowBackend ? "AFG interpolation" : "EvaluateFeature");
             gpu->mark(MaxNrPasses * 4);
             // DLSS 4 semantics used by chiaki-ng-enhanced's DlssBackend:
             // one real pair, separate outputs, one-based inner frame indices.
@@ -1768,7 +1779,7 @@ struct Worker
                 Texture &fgTarget = fallback ? fgPrivate[n] : s.generatedFrame(n);
                 gpu->transition(fgTarget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 fg->resource("DLSSG.OutputInterpolated", fgTarget);
-                p.Set("DLSSG.MultiFrameIndex", n + 1);
+                fg->parameters.Set("DLSSG.MultiFrameIndex", n + 1);
                 fg->eval(*gpu);
             }
             if (fallback)
@@ -1780,7 +1791,7 @@ struct Worker
                 }
             gpu->mark(MaxNrPasses * 4 + 1);
             if (!history)
-                std::fprintf(stderr, "[RTX][FG] EvaluateFeature returned\n");
+                std::fprintf(stderr, "[RTX][FG] %s returned\n", flowBackend ? "AFG interpolation" : "EvaluateFeature");
         }
         if (keepPreviousReal)
         {
@@ -1797,7 +1808,7 @@ struct Worker
         auto stageTimes = gpu->timings();
         // Verified once per worker: a scene cut resets history, it does not change the
         // runtime route, so it must not trigger full-resolution CPU readbacks again.
-        if (fg && !fgVerified)
+        if (hasFg() && !fgVerified)
         {
             auto real = gpu->pixels(s.real);
             if (!reset && previousRealPixels.size() == real.size() && proxyRouteConfirmed())
@@ -1889,8 +1900,9 @@ struct Worker
         if (hdr) msg += "; HDR preserved (SDR model reference)";
         msg += active & Fsr ? "; FSR active" : "; FSR off";
         msg += active & FrameGeneration ? "; FG output verified"
-               : fg                     ? "; FG awaiting output/route verification"
+               : hasFg()                ? "; FG awaiting output/route verification"
                                         : "; FG off";
+        if (flowBackend) msg += "; AFG (custom flow)";
         if (!fgError.empty())
             msg += "; FG unavailable: " + fgError;
         msg += active & Vsr ? "; VSR active" : "; VSR off";

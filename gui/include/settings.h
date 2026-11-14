@@ -448,12 +448,12 @@ class Settings : public QObject
         bool GetEnhancementFrameGenerationEnabled() const { return settings.value("enhancement/frame_generation", false).toBool(); }
         int GetEnhancementVsrQuality() const { return qBound(0, settings.value("enhancement/vsr_quality", 0).toInt(), 4); }
         void SetEnhancementVsrQuality(int value) { settings.setValue("enhancement/vsr_quality", qBound(0, value, 4)); }
-        // 1 = in-app DLSS FG; 2 = externally enabled NVIDIA Smooth Motion.
-        int GetEnhancementFrameGenerationBackend() const { return qBound(1, settings.value("enhancement/fg_backend", 1).toInt(), 2); }
-        void SetEnhancementFrameGenerationBackend(int value) { settings.setValue("enhancement/fg_backend", qBound(1, value, 2)); }
+        // 1 = DLSS FG; 2 = external NVIDIA Smooth Motion; 3 = custom AFG.
+        int GetEnhancementFrameGenerationBackend() const { return qBound(1, settings.value("enhancement/fg_backend", 1).toInt(), 3); }
+        void SetEnhancementFrameGenerationBackend(int value) { settings.setValue("enhancement/fg_backend", qBound(1, value, 3)); }
         int GetEnhancementFrameGenerationMultiplier() const { return GetEnhancementFrameGenerationBackend() == 2 ? 2 : qBound(2, settings.value("enhancement/fg_multiplier", 2).toInt(), 4); }
-        void SetEnhancementFrameGenerationMultiplier(int value) { if(GetEnhancementFrameGenerationBackend() == 1) settings.setValue("enhancement/fg_multiplier", qBound(2, value, 4)); }
-        bool GetEnhancementFrameGeneration() const { return GetEnhancementFrameGenerationEnabled() && GetEnhancementFrameGenerationBackend() == 1; }
+        void SetEnhancementFrameGenerationMultiplier(int value) { if(GetEnhancementFrameGenerationBackend() != 2) settings.setValue("enhancement/fg_multiplier", qBound(2, value, 4)); }
+        bool GetEnhancementFrameGeneration() const { return GetEnhancementFrameGenerationEnabled() && GetEnhancementFrameGenerationBackend() != 2; }
         void SetEnhancementFrameGeneration(bool value) { settings.setValue("enhancement/frame_generation", value); }
         int GetEyeCandyExposure() const { return qBound(-100, settings.value("eye_candy/exposure", 0).toInt(), 100); }
         void SetEyeCandyExposure(int value) { settings.setValue("eye_candy/exposure", qBound(-100, value, 100)); }

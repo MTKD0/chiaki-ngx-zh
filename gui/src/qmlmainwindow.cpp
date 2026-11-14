@@ -8076,6 +8076,7 @@ void QmlMainWindow::updateEnhancementSettings()
         if (options.vsrQuality) options.additionalPasses[pass - 1].fsr = 0;
     }
     options.frameGeneration = settings->GetEnhancementFrameGeneration();
+    options.afg = settings->GetEnhancementFrameGenerationBackend() == 3;
     options.fgMultiplier = options.frameGeneration ? unsigned(settings->GetEnhancementFrameGenerationMultiplier()) : 2;
     QMetaObject::invokeMethod(quick_render, [this, options]() {
         enhancement_options = options;
@@ -8102,9 +8103,10 @@ QString QmlMainWindow::gameplayLatency() const
     const QString external = settings && settings->GetEnhancementFrameGenerationEnabled() && settings->GetEnhancementFrameGenerationBackend() == 2
         ? tr("\nSmooth Motion: external timing unavailable") : QString();
     const QString sum = network >= 0 ? tr("≈%1 ms").arg(network + nr + fg + enhancement_vsr_ms, 0, 'f', 1) : tr("unknown");
-    return tr("Network %1 + NR %2 + FG %3 + VSR %4\n= %5%6")
+    return tr("Network %1 + NR %2 + %7 %3 + VSR %4\n= %5%6")
         .arg(network >= 0 ? tr("≈%1").arg(network, 0, 'f', 1) : tr("unknown"))
-        .arg(nr, 0, 'f', 1).arg(fg, 0, 'f', 1).arg(enhancement_vsr_ms, 0, 'f', 1).arg(sum, external);
+        .arg(nr, 0, 'f', 1).arg(fg, 0, 'f', 1).arg(enhancement_vsr_ms, 0, 'f', 1).arg(sum, external)
+        .arg(settings && settings->GetEnhancementFrameGenerationBackend() == 3 ? QStringLiteral("AFG") : QStringLiteral("FG"));
 }
 
 void QmlMainWindow::requestScreenshot()
@@ -8132,7 +8134,8 @@ void QmlMainWindow::recordGameplayPresentation(bool generated, uint64_t frameKey
     const double real = gameplay_real_count * 1000000.0 / interval;
     const double fg = gameplay_fg_count * 1000000.0 / interval;
     const QString text = enhancement_options.frameGeneration
-        ? tr("%1 total\nReal %2 / FG %3").arg(real+fg, 0, 'f', 1).arg(real, 0, 'f', 1).arg(fg, 0, 'f', 1)
+        ? tr("%1 total\nReal %2 / %4 %3").arg(real+fg, 0, 'f', 1).arg(real, 0, 'f', 1).arg(fg, 0, 'f', 1)
+            .arg(enhancement_options.afg ? QStringLiteral("AFG") : QStringLiteral("FG"))
         : QString::number(real, 'f', 1);
     gameplay_real_count = gameplay_fg_count = 0;
     gameplay_stats_since = now;
@@ -8203,6 +8206,9 @@ void QmlMainWindow::startRendererDiagnostic()
             const double seconds=*sampleStart>=0 ? (clock->elapsed()-*sampleStart)/1000.0 : 0;
             QJsonObject result;
             result["mode"]=mode; result["source_fps"]=fps;
+            result["fg_backend"]=settings->GetEnhancementFrameGenerationBackend();
+            result["fg_multiplier"]=settings->GetEnhancementFrameGenerationMultiplier();
+            result["latency"]=gameplayLatency();
             result["real_fps"]=seconds>0 ? (diagnostic_real_total.loadAcquire()-*beforeReal)/seconds : 0;
             result["fg_fps"]=seconds>0 ? (diagnostic_fg_total.loadAcquire()-*beforeFg)/seconds : 0;
             result["nr_active"]=enhancement_nr_active; result["fg_active"]=enhancement_fg_active;

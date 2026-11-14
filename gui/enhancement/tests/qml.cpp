@@ -123,6 +123,13 @@ int main(int argc, char **argv)
     auto fgMultiplier = root->findChild<QObject *>("fgMultiplier");
     auto smoothHelp = root->findChild<QObject *>("smoothMotionHelp");
     CHECK(fgBackend && fgMultiplier && smoothHelp);
+    CHECK(fgBackend->property("count").toInt() == 3);
+    CHECK(QMetaObject::invokeMethod(fgBackend, "activated", Q_ARG(int, 2)));
+    app.processEvents();
+    CHECK(backend.settings()->value("enhancementFrameGenerationBackend").toInt() == 3);
+    CHECK(fgMultiplier->property("enabled").toBool());
+    CHECK(root->findChild<QObject *>("afgHelp")->property("visible").toBool());
+    CHECK(!smoothHelp->property("visible").toBool());
     CHECK(fgMultiplier->property("count").toInt() == 3);
     CHECK(QMetaObject::invokeMethod(fgMultiplier, "activated", Q_ARG(int, 2)));
     CHECK(backend.settings()->value("enhancementFrameGenerationMultiplier").toInt() == 4);

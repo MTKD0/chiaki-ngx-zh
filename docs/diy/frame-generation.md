@@ -7,7 +7,8 @@
 | 插帧方式 | 可选倍数 | 实际处理 |
 | --- | --- | --- |
 | DLSS FG | 2x / 3x / 4x | 应用内 NGX 生成 1 / 2 / 3 张不同中间帧，再显示真实帧 |
-| smooth motion | 仅 2x | 应用停用内置 DLSS FG，由用户在 NVIDIA App 中启用驱动插帧 |
+| smooth motion | 仅 2x | 应用停用内置插帧，由用户在 NVIDIA App 中启用驱动插帧 |
+| AFG | 2x / 3x / 4x | 自建光流投影插值，无需 DLSS FG 运行库；实验性功能 |
 
 DLSS 5 神经渲染独立于插帧方式，可以与任一方式组合。现有 HDR NR 路径保留；应用内 DLSS FG 目前仍限 SDR。Smooth Motion 的 HDR 支持与实际启用情况由 NVIDIA 驱动决定，本程序不承诺或检测其激活状态。
 
@@ -50,3 +51,6 @@ DLSS FG 的 3x/4x 需要兼容的 RTX 50 系列显卡和运行库。当前保守
 Smooth Motion 尚未通过实际 NVIDIA App 设置和外部帧率测量验证。真实 PlayStation 串流及 GTA6 专项效果仍待验证。
 
 没有主机时，可以用本地录制的游戏视频调试和量化帧生成，见[帧生成视频实验台](video-lab.md)。
+## AFG
+
+自建插帧已接入为第三种方式 **AFG**，支持 2x / 3x / 4x。使用方法、依赖及验证范围见 [AFG 自建插帧](afg.md)。

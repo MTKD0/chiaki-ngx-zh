@@ -4,6 +4,7 @@
 #include <QStringList>
 
 namespace EnhancementChoices {
+inline QString fgName(int backend) { return backend == 3 ? QStringLiteral("AFG") : backend == 2 ? QStringLiteral("smooth motion") : QStringLiteral("DLSS FG"); }
 inline bool spatialPreset(int value) { return value == 3 || value == 4; }
 inline bool spatialScaler(int value) { return value >= int(PlaceboUpscaler::FSR) && value <= int(PlaceboUpscaler::FSRCNNX16); }
 inline QString conflicts(const Settings &settings, const QString &choice, int value)
@@ -29,7 +30,7 @@ inline QString conflicts(const Settings &settings, const QString &choice, int va
             (choice != "upscaler" || value != int(settings.GetPlaceboUpscaler())))
             result << (settings.GetPlaceboUpscaler() == PlaceboUpscaler::FSR ? "FSR" : "FSRCNNX");
     } else if (choice == "fgBackend" && settings.GetEnhancementFrameGenerationEnabled() && value != settings.GetEnhancementFrameGenerationBackend()) {
-        result << (settings.GetEnhancementFrameGenerationBackend() == 1 ? "DLSS FG" : "smooth motion");
+        result << fgName(settings.GetEnhancementFrameGenerationBackend());
     }
     return result.join(" / ");
 }

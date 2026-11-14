@@ -8,7 +8,7 @@
 namespace chiaki_enhancement
 {
 constexpr uint32_t Magic = 0x58474e43; // CNGX, little endian, Windows x64 only
-constexpr uint32_t Version = 9;
+constexpr uint32_t Version = 10;
 constexpr unsigned MaxNrPasses = 3;
 constexpr unsigned MaxGeneratedFrames = 3;
 constexpr unsigned SlotCount = 3;
@@ -29,7 +29,9 @@ enum Flag : uint32_t
     HdrLinear = 32,
     Vsr = 64,
     // VSR runs on the decoded frame before NR; NR sizes are then relative to the output.
-    VsrFirst = 128
+    VsrFirst = 128,
+    // Custom optical-flow interpolation; mutually exclusive with DLSS FG.
+    Afg = 256
 };
 enum class Result : uint32_t
 {
@@ -158,10 +160,11 @@ inline bool valid(const Command &c)
            c.fgMultiplier >= 2 && c.fgMultiplier <= MaxGeneratedFrames + 1 &&
            c.vsrQuality <= 4 && (!(c.flags & Vsr) || c.vsrQuality > 0) &&
            (!(c.flags & VsrFirst) || (c.flags & Vsr)) &&
+           (!(c.flags & Afg) || (c.flags & FrameGeneration)) &&
            ((!c.inputWidth && !c.inputHeight) || (c.inputWidth && c.inputHeight && c.inputWidth <= c.width && c.inputHeight <= c.height)) &&
            c.nrPassCount >= 1 && c.nrPassCount <= MaxNrPasses &&
            validTuning(c.nrTuning) && validPass(c.additionalPasses[0]) && validPass(c.additionalPasses[1]) &&
-           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear | Vsr | VsrFirst)) &&
+           !(c.flags & ~(Neural | Fsr | FrameGeneration | Reset | BridgeTest | HdrLinear | Vsr | VsrFirst | Afg)) &&
            (c.operation == Operation::Shutdown ||
             (c.width && c.height && c.width <= 16384 && c.height <= 16384)) &&
            (c.operation != Operation::Process || (c.slot < SlotCount && (c.fenceValue & 1)));

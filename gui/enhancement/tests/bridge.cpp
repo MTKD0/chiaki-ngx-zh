@@ -96,8 +96,9 @@ int main(int argc, char **argv)
             options.neural = true;
             options.sharpness = 0;
         }
-        if (app.arguments().contains("--fg"))
+        if (app.arguments().contains("--fg") || app.arguments().contains("--afg"))
             options.frameGeneration = true;
+        options.afg = app.arguments().contains("--afg");
         if (app.arguments().contains("--no-fsr"))
             options.fsr = false;
         const auto argument = [&](const QString &name, int fallback)
@@ -406,6 +407,12 @@ int main(int argc, char **argv)
                         if (std::memcmp(screenshot.constScanLine(row), output.data()+size_t(row)*width*4, size_t(width)*4) != 0) {
                             qCritical() << "Screenshot pixels differ from processed output"; app.quit(); return;
                         }
+                }
+                if (completed == 15 && app.arguments().contains("--switch-fg-backend"))
+                {
+                    configured = false;
+                    options.afg = !options.afg;
+                    pipeline.prepare(vk, {uint32_t(width), uint32_t(height)}, options, false);
                 }
                 if (completed == 15 &&
                     (app.arguments().contains("--resize") || app.arguments().contains("--reset")))

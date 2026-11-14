@@ -799,8 +799,8 @@ Totals: %4 real · %5 generated</source>
     </message>
     <message>
         <location line="+9"/>
-        <source>smooth motion is driver-based 2x frame generation. In NVIDIA App, open Graphics &gt; Program settings, add the main program below and enable Smooth Motion, then restart Chiaki. Selecting this method disables in-app DLSS FG; NVIDIA App activation cannot be verified here. Requires a compatible RTX 40/50 GPU, driver and Vulkan renderer. App FPS does not include driver-generated frames.</source>
-        <translation>smooth motion 由驱动实现 2x 插帧。请在 NVIDIA App 的“图形 → 程序设置”中添加下方主程序，开启 Smooth Motion，再重新启动 Chiaki。选择此方式会停用应用内的 DLSS FG；本程序无法确认 NVIDIA App 中是否已启用。需要兼容的 RTX 40/50 显卡、驱动和 Vulkan 渲染器。应用内帧率不包含驱动生成帧。</translation>
+        <source>smooth motion is driver-based 2x frame generation. In NVIDIA App, open Graphics &gt; Program settings, add the main program below and enable Smooth Motion, then restart Chiaki. Selecting this method disables in-app frame generation; NVIDIA App activation cannot be verified here. Requires a compatible RTX 40/50 GPU, driver and Vulkan renderer. App FPS does not include driver-generated frames.</source>
+        <translation>smooth motion 由驱动实现 2x 插帧。请在 NVIDIA App 的“图形 → 程序设置”中添加下方主程序，开启 Smooth Motion，再重新启动 Chiaki。选择此方式会停用应用内的插帧；本程序无法确认 NVIDIA App 中是否已启用。需要兼容的 RTX 40/50 显卡、驱动和 Vulkan 渲染器。应用内帧率不包含驱动生成帧。</translation>
     </message>
     <message>
         <location line="+5"/>
@@ -833,6 +833,10 @@ Totals: %4 real · %5 generated</source>
         <location line="+7"/>
         <source>Each NR pass enhances the preceding pass. Extra passes follow pass 1 until Customize each pass is enabled. NR presets select the model without changing your strength sliders. Skin Structure uses Automatic Mask; -1 turns skin adjustments off. Resolution is relative to the displayed video area. Additional passes increase GPU time and memory use. Optional NVIDIA runtimes are installed separately; unavailable features leave ordinary playback running.</source>
         <translation>每一遍 NR 都处理上一遍的输出。启用“分别自定义每一遍”前，额外遍次沿用第 1 遍设置。NR 预设只选择模型，不改变强度滑块。皮肤结构使用自动蒙版；-1 表示关闭皮肤调整。分辨率相对于显示的视频区域计算。增加遍数会增加 GPU 耗时和显存占用。可选的 NVIDIA 运行库需另行安装；某项功能不可用时仍可正常播放。</translation>
+    </message>
+    <message>
+        <source>AFG: experimental custom optical-flow interpolation, with 2x/3x/4x output. Requires a compatible NVIDIA RTX GPU and Vulkan; SDR only. Does not use the DLSS FG runtime. Can be combined with VSR and NR. Turn Smooth Motion off in NVIDIA App to avoid stacking frame generation.</source>
+        <translation>AFG：实验性自建光流插帧，支持 2x / 3x / 4x。需要兼容的 NVIDIA RTX 显卡及 Vulkan，目前仅支持 SDR。无需 DLSS FG 运行库，可与 VSR、NR 组合使用。请先在 NVIDIA App 中关闭 Smooth Motion，避免重复插帧。</translation>
     </message>
 </context>
 <context>
@@ -2848,9 +2852,9 @@ Smooth Motion：无法测量驱动额外耗时</translation>
     </message>
     <message>
         <location line="-1"/>
-        <source>Network %1 + NR %2 + FG %3 + VSR %4
+        <source>Network %1 + NR %2 + %7 %3 + VSR %4
 = %5%6</source>
-        <translation>网络 %1 + NR %2 + 插帧 %3 + VSR %4
+        <translation>网络 %1 + NR %2 + %7 %3 + VSR %4
 = %5%6</translation>
     </message>
     <message>
@@ -2861,9 +2865,9 @@ Smooth Motion：无法测量驱动额外耗时</translation>
     <message>
         <location line="+29"/>
         <source>%1 total
-Real %2 / FG %3</source>
+Real %2 / %4 %3</source>
         <translation>总计 %1
-真实帧 %2 / 生成帧 %3</translation>
+真实帧 %2 / %4 %3</translation>
     </message>
     <message>
         <location filename="../include/qmlmainwindow.h" line="-107"/>

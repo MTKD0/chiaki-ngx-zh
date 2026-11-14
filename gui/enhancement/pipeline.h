@@ -13,6 +13,7 @@ extern "C"
 struct EnhancementOptions
 {
     bool neural = false, fsr = true, frameGeneration = false, bridgeTest = false;
+    bool afg = false;
     int percent = 65, sharpness = 20;
     unsigned nrPassCount = 1;
     unsigned fgMultiplier = 2;
@@ -22,7 +23,7 @@ struct EnhancementOptions
     bool operator==(const EnhancementOptions &o) const
     {
         return neural == o.neural && fsr == o.fsr && frameGeneration == o.frameGeneration &&
-               bridgeTest == o.bridgeTest && percent == o.percent && sharpness == o.sharpness &&
+               afg == o.afg && bridgeTest == o.bridgeTest && percent == o.percent && sharpness == o.sharpness &&
                nrPassCount == o.nrPassCount && fgMultiplier == o.fgMultiplier && vsrQuality == o.vsrQuality &&
                inputWidth == o.inputWidth && inputHeight == o.inputHeight && nrTuning == o.nrTuning && additionalPasses == o.additionalPasses;
     }

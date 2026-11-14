@@ -65,6 +65,8 @@ int main()
     c.fenceValue = 1;
     c.flags = 0x8000;
     CHECK(!valid(c));
+    c.flags = Afg; CHECK(!valid(c));
+    c.flags = Afg | FrameGeneration; CHECK(valid(c));
     c.flags = Neural | Fsr;
     c.flags |= HdrLinear;
     CHECK(valid(c));

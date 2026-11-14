@@ -2261,7 +2261,7 @@ void QmlSettings::requestEnhancementChoice(QString choice, int value)
     const QString conflict = enhancementConflict(choice, value);
     if (conflict.isEmpty()) { applyEnhancementChoice(choice, value); return; }
     const QString requested = choice == "vsr" ? QStringLiteral("NVIDIA VSR")
-        : choice == "fgBackend" ? (value == 1 ? QStringLiteral("DLSS FG") : QStringLiteral("smooth motion"))
+        : choice == "fgBackend" ? EnhancementChoices::fgName(value)
         : choice == "fsr" ? QStringLiteral("FSR (NR)") : QStringLiteral("FSR / FSRCNNX");
     // Restore the control binding while awaiting a decision; cancellation changes no settings.
     emit enhancementChanged(); emit enhancementControlsChanged();
@@ -2275,7 +2275,7 @@ void QmlSettings::applyEnhancementChoice(QString choice, int value)
     emit placeboUpscalerChanged(); emit videoPresetChanged(); emit placeboChanged();
 }
 int QmlSettings::enhancementFrameGenerationBackend() const { return settings->GetEnhancementFrameGenerationBackend(); }
-void QmlSettings::setEnhancementFrameGenerationBackend(int value) { requestEnhancementChoice("fgBackend", qBound(1, value, 2)); }
+void QmlSettings::setEnhancementFrameGenerationBackend(int value) { requestEnhancementChoice("fgBackend", qBound(1, value, 3)); }
 int QmlSettings::enhancementFrameGenerationMultiplier() const { return settings->GetEnhancementFrameGenerationMultiplier(); }
 void QmlSettings::setEnhancementFrameGenerationMultiplier(int value) { settings->SetEnhancementFrameGenerationMultiplier(value); emit enhancementChanged(); }
 QString QmlSettings::applicationExecutable() const { return QDir::toNativeSeparators(QCoreApplication::applicationFilePath()); }

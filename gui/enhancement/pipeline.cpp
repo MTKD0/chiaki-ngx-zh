@@ -552,12 +552,12 @@ struct EnhancementPipeline::Impl
             runtime = QCoreApplication::applicationDirPath() + QStringLiteral("/runtimes");
         vsrFailure = options.vsrQuality && !hdr ? verifyVsrRuntime(runtime) : QString();
         const bool enableVsr = options.vsrQuality && vsrFailure.isEmpty();
-        if (options.neural || options.frameGeneration)
+        if (options.neural || (options.frameGeneration && !options.afg))
         {
-            const bool sm86 = options.frameGeneration && !hdr && usesSm86(
+            const bool sm86 = options.frameGeneration && !options.afg && !hdr && usesSm86(
                 QString::fromUtf8(p.properties.deviceName).toStdWString());
             qInfo() << "[RTX][RuntimeRoute] sm86=" << sm86;
-            const QString error = verifyRuntimeManifest(runtime, options.neural, options.frameGeneration && !hdr, sm86);
+            const QString error = verifyRuntimeManifest(runtime, options.neural, options.frameGeneration && !options.afg && !hdr, sm86);
             if (!error.isEmpty())
             {
                 fail(error);
@@ -589,6 +589,7 @@ struct EnhancementPipeline::Impl
         std::copy(options.additionalPasses.begin(), options.additionalPasses.end(), config.additionalPasses);
         config.flags = (options.neural ? Neural : 0) |
                        (options.frameGeneration ? FrameGeneration : 0) |
+                       ((options.frameGeneration && options.afg) ? Afg : 0) |
                        ((options.neural && options.fsr && canUpscale(native, work)) ? Fsr : 0) |
                        (options.bridgeTest ? BridgeTest : 0) | (hdr ? HdrLinear : 0) | (enableVsr ? Vsr : 0);
         // Default chain: VSR cleans and enlarges the decoded frame before NR and FG.
@@ -809,7 +810,7 @@ void EnhancementPipeline::prepare(pl_vulkan vk, Extent native, const Enhancement
     // Never restart a worker with an in-flight frame just to change FSR/RCAS.
     const bool sameResources = sameEncoding && i.hdr == hdr && i.vk == vk && i.native.width == native.width &&
         i.native.height == native.height && i.options.neural == options.neural &&
-        i.options.frameGeneration == options.frameGeneration && i.options.fgMultiplier == options.fgMultiplier && i.options.bridgeTest == options.bridgeTest &&
+        i.options.frameGeneration == options.frameGeneration && i.options.afg == options.afg && i.options.fgMultiplier == options.fgMultiplier && i.options.bridgeTest == options.bridgeTest &&
         i.options.vsrQuality == options.vsrQuality && i.options.inputWidth == options.inputWidth && i.options.inputHeight == options.inputHeight &&
         (!options.neural || (i.options.percent == options.percent && i.options.nrPassCount == options.nrPassCount &&
             (options.nrPassCount < 2 || i.options.additionalPasses[0].percent == options.additionalPasses[0].percent) &&

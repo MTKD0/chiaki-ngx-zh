@@ -9,6 +9,7 @@ EnhancementOptions enhancementOptions(const LabOptions &o)
     // Keeps real frames flowing while FG warms up or is switched off, as the bridge test does.
     options.bridgeTest = true;
     options.frameGeneration = o.frameGeneration;
+    options.afg = qEnvironmentVariable("CHIAKI_ENHANCEMENT_FG_BACKEND").compare(QLatin1String("flow"), Qt::CaseInsensitive) == 0;
     options.fgMultiplier = o.multiplier;
     options.neural = o.neural;
     options.fsr = o.fsr;

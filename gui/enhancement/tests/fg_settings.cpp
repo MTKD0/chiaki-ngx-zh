@@ -69,6 +69,24 @@ int main(int argc, char **argv)
     EnhancementChoices::apply(reopened, "fgBackend", 2);
     CHECK(!reopened.GetEnhancementFrameGeneration());
     CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == 2);
-    std::puts("FG migration, backend exclusion, VSR overlap detection/cancellation/replacement and unrelated NR preservation passed");
+    CHECK(EnhancementChoices::conflicts(reopened, "fgBackend", 3) == "smooth motion");
+    CHECK(reopened.GetEnhancementFrameGenerationBackend() == 2); // Cancel preserves Smooth Motion.
+    EnhancementChoices::apply(reopened, "fgBackend", 3);
+    CHECK(reopened.GetEnhancementFrameGeneration());
+    CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == 4);
+    for (int multiplier = 2; multiplier <= 4; ++multiplier) {
+        reopened.SetEnhancementFrameGenerationMultiplier(multiplier);
+        CHECK(reopened.GetEnhancementFrameGenerationMultiplier() == multiplier);
+    }
+    CHECK(EnhancementChoices::conflicts(reopened, "fgBackend", 1) == "AFG");
+    CHECK(EnhancementChoices::conflicts(reopened, "fgBackend", 3).isEmpty());
+    QSettings().sync();
+    Settings afgReopened(QString{});
+    CHECK(afgReopened.GetEnhancementFrameGenerationBackend() == 3);
+    CHECK(afgReopened.GetEnhancementFrameGenerationMultiplier() == 4);
+    CHECK(afgReopened.GetEnhancementFrameGeneration());
+    afgReopened.SetEnhancementFrameGeneration(false);
+    CHECK(!afgReopened.GetEnhancementFrameGeneration());
+    std::puts("AFG persistence, 2x/3x/4x, cancellation, FG migration, backend exclusion, VSR overlap detection/cancellation/replacement and unrelated NR preservation passed");
     return 0;
 }
