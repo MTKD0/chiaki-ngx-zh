@@ -346,7 +346,7 @@ struct Gpu
         // Motion refinement is optional: a failure here keeps the plain vector path.
         try
         {
-            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "interpolateMain"})
+            for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -912,6 +912,7 @@ struct Worker
     // on the flow grid; generated frames fall back to the nearest real frame where
     // the estimate is unreliable.
     Texture refinedFlow, flowConfidence, previousReal;
+    Texture selectedVectors; // flow backend: per-phase vector choice at half the output size
     std::array<Texture, MaxGeneratedFrames> fgPrivate;
     Gpu::Readback thumbnailReadback, vectorReadback;
     bool motionRefine = false, fgFallback = false, previousRealValid = false;
@@ -1158,7 +1159,9 @@ struct Worker
         flowBackend = fg && gpu->refineShaders && environmentIs(L"CHIAKI_ENHANCEMENT_FG_BACKEND", L"flow");
         zeroVectors = fg && !flowBackend && environmentIs(L"CHIAKI_ENHANCEMENT_FG_VECTORS", L"zero");
         const int refineSwitch = environmentSwitch(L"CHIAKI_ENHANCEMENT_MOTION_REFINE");
-        motionRefine = optical && gpu->refineShaders && (refineSwitch < 0 ? flowBackend : refineSwitch == 1);
+        // Refinement is opt-in for both backends: with candidate selection in the flow
+        // backend it no longer improved the recorded clips and costs a readback per frame.
+        motionRefine = optical && gpu->refineShaders && refineSwitch == 1;
         if (motionRefine)
         {
             refinedFlow = gpu->texture(optical->vectors.width, optical->vectors.height, DXGI_FORMAT_R16G16_FLOAT);
@@ -1169,6 +1172,9 @@ struct Worker
         keepPreviousReal = fgFallback || flowBackend;
         if (keepPreviousReal)
             previousReal = gpu->texture(c.width, c.height);
+        if (flowBackend)
+            selectedVectors = gpu->texture(std::max(1u, (c.width + 1) / 2), std::max(1u, (c.height + 1) / 2),
+                                           DXGI_FORMAT_R16G16B16A16_FLOAT);
         if (fgFallback)
             for (unsigned n = 0; n < c.fgMultiplier - 1; ++n)
                 fgPrivate[n] = gpu->texture(c.width, c.height);
@@ -1555,9 +1561,15 @@ struct Worker
                 // A reset frame has no usable pair; its generated outputs are not presented.
                 if (previousRealValid && !reset)
                     for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
-                        // t, agreement thresholds (luma, 0..1), hypothesis margin; dead zone in pixels.
-                        const float phase[8] = {float(n + 1) / float(c.fgMultiplier), 0.06f, 0.20f, 0.01f, 0.2f, 0, 0, 0};
-                        gpu->run("interpolateMain", &previousReal, s.generatedFrame(n), processed, &fullMotion,
+                        const float t = float(n + 1) / float(c.fgMultiplier);
+                        // Candidate radii scale with the output; 0.004 is the margin by which
+                        // "did not move" is favoured, 0.12 the error assumed outside the frame.
+                        const float reach = float(c.height) / 1080.0f;
+                        const float select[8] = {t, 0, 0, 0.004f, 16.0f * reach, 64.0f * reach, 0.12f, 0};
+                        gpu->run("selectMain", &previousReal, selectedVectors, processed, &fullMotion,
+                                 nullptr, 0, 1, 1, select);
+                        const float phase[8] = {t, 0.06f, 0.20f, 0, 0, 0, 0, 0};
+                        gpu->run("interpolateMain", &previousReal, s.generatedFrame(n), processed, &selectedVectors,
                                  nullptr, 0, 1, 1, phase);
                     }
             }

@@ -418,7 +418,7 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("flow-scale", "Optical flow resolution relative to the input, 0.25-1. Smaller follows larger motion.", "factor");
     add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
     add("no-fg-fallback", "Never blend DLSS FG output back to real pixels (the worker default).");
-    add("motion-refine", "Force vector refinement on or off. Default: on only with --fg-backend flow.", "on|off");
+    add("motion-refine", "Force vector refinement on or off. Default: off.", "on|off");
     add("fg-fallback", "Blend low-confidence DLSS FG regions back to the nearest real frame (needs refinement on).");
     add("fg-backend", "dlss (default) or flow: the worker's experimental flow-based interpolation.", "name");
     add("fg-vectors", "flow (default) or zero: feed DLSS FG zero motion vectors, to measure how much it uses them.",

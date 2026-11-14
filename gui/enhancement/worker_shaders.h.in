@@ -127,17 +127,63 @@ float2 flowAt(int2 q, int2 limit) {
     target[p.xy] = float4(lerp(real,generated,confidence),1);
 }
 // Experimental flow-based interpolation (CHIAKI_ENHANCEMENT_FG_BACKEND=flow).
-// a = previous real, b = current real, c = motion in output pixels (current ->
-// previous). extraA = (t, consistent below, inconsistent above, hypothesis margin),
-// extraB.x = dead zone in pixels; t in (0,1) from the previous to the current frame.
+// Two passes per generated phase, t in (0,1) from the previous to the current frame.
 //
-// Two hypotheses are compared per pixel by their photometric error between the
-// two real frames: "moved along the flow vector" and "did not move". Recorded
-// clips showed that always trusting the vector loses to a plain cross-fade on
-// slow or static content (vector noise plus resampling blur) and tears into
-// blobs where the flow fails on fast motion; the cheaper hypothesis wins softly,
-// so a failed vector degrades to a cross-fade instead.
-// 9-tap Catmull-Rom through 3x3 bilinear fetches: keeps moved detail sharp.
+// selectMain (half resolution) chooses one motion vector per pixel of the
+// intermediate frame from a small candidate set, by the photometric error of a
+// 4-tap patch between the two real frames along that vector:
+//   - "did not move" (favoured by a small margin: vector noise on static content
+//     must not cost sharpness),
+//   - the field vector followed to this pixel's surface, and the raw field vector,
+//   - the field vectors of neighbours at two radii. At occlusion borders and where
+//     new content enters the frame the local vector has no real match; a
+//     neighbour's vector (the surface that actually covers this pixel) then wins.
+// Deciding on patches at half resolution keeps the choice spatially stable: the
+// per-pixel decision of the previous version speckled thin structures.
+// a = previous real, b = current real, c = motion in output pixels (current ->
+// previous). extraA = (t, -, -, margin), extraB = (radius 1, radius 2 in pixels,
+// error assumed when a sample leaves the frame, -).
+// Output: xy = chosen vector in output pixels, z = its error.
+float pairError(float2 x, float2 g, float t, float2 size) {
+    float2 pc = x-(1.0-t)*g;
+    float2 pp = x+t*g;
+    if(any(pc < 0.0) || any(pc > size) || any(pp < 0.0) || any(pp > size)) return extraB.z;
+    static const float2 taps[4] = {float2(-1.5,-1.5),float2(1.5,-1.5),float2(-1.5,1.5),float2(1.5,1.5)};
+    float e = 0;
+    for(int k=0;k<4;++k)
+        e += dot(abs(b.SampleLevel(clampSampler,(pc+taps[k])/size,0).rgb-
+                     a.SampleLevel(clampSampler,(pp+taps[k])/size,0).rgb),float3(0.299,0.587,0.114));
+    return e*0.25;
+}
+[numthreads(8,8,1)] void selectMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float t = extraA.x;
+    float2 size = float2(sourceSize);
+    float2 x = (p.xy+0.5)*size/float2(outputSize);
+    float2 g0 = c.SampleLevel(clampSampler,x/size,0).xy;
+    // The vector field lives on the current frame: follow it to the surface that
+    // passes through this pixel at time t.
+    float2 gi = g0;
+    for(int k=0;k<2;++k) gi = c.SampleLevel(clampSampler,(x-(1.0-t)*gi)/size,0).xy;
+    float2 best = float2(0,0);
+    float bestError = pairError(x,best,t,size)-extraA.w;
+    float e = pairError(x,gi,t,size);
+    if(e < bestError) { bestError = e; best = gi; }
+    e = pairError(x,g0,t,size)+extraA.w;
+    if(e < bestError) { bestError = e; best = g0; }
+    static const float2 directions[4] = {float2(1,0),float2(-1,0),float2(0,1),float2(0,-1)};
+    for(int r=0;r<2;++r) {
+        float radius = r == 0 ? extraB.x : extraB.y;
+        for(int d=0;d<4;++d) {
+            float2 gn = c.SampleLevel(clampSampler,(x+directions[d]*radius)/size,0).xy;
+            e = pairError(x,gn,t,size)+extraA.w;
+            if(e < bestError) { bestError = e; best = gn; }
+        }
+    }
+    target[p.xy] = float4(best,max(bestError,0.0),0);
+}
+// 9-tap Catmull-Rom through 3x3 bilinear fetches: keeps moved detail sharp and
+// returns the texel itself at integer positions.
 float3 sampleSharp(Texture2D<float4> image, float2 uv, float2 size) {
     float2 position = uv*size;
     float2 base = floor(position-0.5)+0.5;
@@ -161,38 +207,29 @@ float3 sampleSharp(Texture2D<float4> image, float2 uv, float2 size) {
     r += image.SampleLevel(clampSampler,float2(p3.x,p3.y),0).rgb*(w3.x*w3.y);
     return saturate(r);
 }
+// a = previous real, b = current real, c = selectMain's output for this phase.
+// extraA = (t, consistent below, inconsistent above). Both frames are sampled
+// along the chosen vector; where they still disagree (a real occlusion) or one
+// sample leaves the frame, the compensated sample of the temporally nearer / the
+// in-frame image is used alone.
 [numthreads(8,8,1)] void interpolateMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float t = extraA.x;
     float2 size = float2(outputSize);
     float2 x = p.xy+0.5;
-    float3 luma = float3(0.299,0.587,0.114);
-    // The vector field lives on the current frame: iterate to the vector of the
-    // surface that passes through this pixel at time t.
     float2 g = c.SampleLevel(clampSampler,x/size,0).xy;
-    for(int k=0;k<2;++k) g = c.SampleLevel(clampSampler,(x-(1.0-t)*g)/size,0).xy;
-    float3 current0 = b.Load(int3(p.xy,0)).rgb;
-    float3 previous0 = a.Load(int3(p.xy,0)).rgb;
-    float3 held = lerp(previous0,current0,t);
-    // Sub-threshold vectors are estimation noise on static content.
-    if(dot(g,g) < extraB.x*extraB.x) { target[p.xy] = float4(held,1); return; }
     float2 fromCurrent = (x-(1.0-t)*g)/size;
     float2 fromPrevious = (x+t*g)/size;
     float3 current = sampleSharp(b,fromCurrent,size);
     float3 previous = sampleSharp(a,fromPrevious,size);
     bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
     bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
-    float mismatch = dot(abs(current-previous),luma);
-    float still = dot(abs(current0-previous0),luma);
-    // Within the moved hypothesis: blend when both samples agree, otherwise the
-    // compensated sample of the temporally nearer (or the only in-frame) image.
+    float mismatch = dot(abs(current-previous),float3(0.299,0.587,0.114));
     float nearer = t >= 0.5 ? 1.0 : 0.0;
     float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
-    float useHeld = smoothstep(-extraA.w,2.0*extraA.w,mismatch-still);
-    if(currentInside && !previousInside) { w = 1.0; useHeld = 0.0; }
-    if(previousInside && !currentInside) { w = 0.0; useHeld = 0.0; }
-    float3 moved = lerp(previous,current,w);
-    target[p.xy] = float4(lerp(moved,held,useHeld),1);
+    if(currentInside && !previousInside) w = 1.0;
+    if(previousInside && !currentInside) w = 0.0;
+    target[p.xy] = float4(lerp(previous,current,w),1);
 }
 [numthreads(8,8,1)] void residualMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;

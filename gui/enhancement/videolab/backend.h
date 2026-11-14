@@ -38,10 +38,10 @@ inline QString workerSwitches()
         const QString text = qEnvironmentVariable(name);
         return text.isEmpty() ? QString::fromLatin1(fallback) : text;
     };
-    // Worker defaults: refinement only with the flow backend ("auto"), fallback off.
+    // Worker defaults: refinement and fallback off.
     return QStringLiteral("chain=%1 flow=%2 motion_refine=%3 fg_fallback=%4 fg_backend=%5 fg_vectors=%6 flow_scale=%7")
         .arg(value("CHIAKI_ENHANCEMENT_CHAIN", "vsr-first"), value("CHIAKI_ENHANCEMENT_FLOW_QUALITY", "auto"),
-             value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "auto"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off"),
+             value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off"),
              value("CHIAKI_ENHANCEMENT_FG_BACKEND", "dlss"), value("CHIAKI_ENHANCEMENT_FG_VECTORS", "flow"),
              value("CHIAKI_ENHANCEMENT_FLOW_SCALE", "1"));
 }

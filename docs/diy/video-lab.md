@@ -106,7 +106,7 @@ cd release/ngx
 | 参数 | 作用 | 对应环境变量 |
 | --- | --- | --- |
 | `--fg-backend flow` | 实验性自建插帧：不调用 DLSS FG，沿光流向量对前后真实帧做运动补偿插值；默认 `dlss` | `CHIAKI_ENHANCEMENT_FG_BACKEND=flow` |
-| `--motion-refine on\|off` | 强制开关向量精修（全局运动模型、中值、保边上采样）。默认仅在 `--fg-backend flow` 时开启 | `CHIAKI_ENHANCEMENT_MOTION_REFINE` |
+| `--motion-refine on\|off` | 强制开关向量精修（全局运动模型、中值、保边上采样）。默认关闭 | `CHIAKI_ENHANCEMENT_MOTION_REFINE` |
 | `--no-motion-refine` | 等同 `--motion-refine off` | `CHIAKI_ENHANCEMENT_MOTION_REFINE=off` |
 | `--fg-fallback` | 把 DLSS FG 低置信度区域混回最近真实帧（需精修开启）。默认关闭 | `CHIAKI_ENHANCEMENT_FG_FALLBACK=on` |
 | `--no-fg-fallback` | 显式关闭回退（与默认相同） | `CHIAKI_ENHANCEMENT_FG_FALLBACK=off` |
