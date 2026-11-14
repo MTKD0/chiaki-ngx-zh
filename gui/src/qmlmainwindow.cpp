@@ -7943,6 +7943,12 @@ bool QmlMainWindow::nvidiaCard() const
 bool QmlMainWindow::event(QEvent *event)
 {
     switch (event->type()) {
+    case QEvent::Wheel:
+        // The visible QWindow owns the input; the offscreen Quick window owns
+        // the settings controls and must receive wheel events too.
+        if (!session || grab_input)
+            QGuiApplication::sendEvent(quick_window, event);
+        return true;
     case QEvent::MouseMove:
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonRelease:

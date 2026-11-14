@@ -27,6 +27,9 @@ int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
     const bool present = app.arguments().contains("--present");
+    const bool staticScene = app.arguments().contains("--static");
+    const bool blackScene = app.arguments().contains("--black");
+    int verifiedStaticPhases = 0;
     QWindow testWindow;
     testWindow.resize(640, 360);
     auto log = pl_log_create(PL_API_VER, nullptr);
@@ -85,7 +88,7 @@ int main(int argc, char **argv)
             return 1;
     }
 #endif
-    int result = 1, completed = 0, presented = 0;
+    int result = 1, completed = 0, presented = 0, presentationEpochStart = 0;
     uint64_t id = 0;
     {
         EnhancementPipeline pipeline;
@@ -227,9 +230,10 @@ int main(int argc, char **argv)
                     for (int x = 0; x < width; ++x)
                     {
                         size_t n = (size_t(y) * width + x) * 4;
-                        input[n] = uint8_t((x + id * 3) % 256);
-                        input[n + 1] = uint8_t((y + id * 7) % 256);
-                        input[n + 2] = uint8_t((((x + id * 3) / 11 + (y + id) / 9) % 2) * 180 + 30);
+                        const uint64_t motion = staticScene ? 0 : id;
+                        input[n] = blackScene ? 0 : uint8_t((x + motion * 3) % 256);
+                        input[n + 1] = blackScene ? 0 : uint8_t((y + motion * 7) % 256);
+                        input[n + 2] = blackScene ? 0 : uint8_t((((x + motion * 3) / 11 + (y + motion) / 9) % 2) * 180 + 30);
                         input[n + 3] = 255;
                     }
                 pl_tex tex = pipeline.beginFrame(id + 1, (id + 1) * (sourceFps ? 1000000/sourceFps : 16667));
@@ -306,6 +310,23 @@ int main(int argc, char **argv)
             &pipeline, &EnhancementPipeline::frameAvailable, &app,
             [&]
             {
+                if (staticScene && options.afg && pipeline.hasUnpresentedOutput() && pipeline.generatedOutput())
+                {
+                    pl_frame phase{};
+                    pl_tex_transfer_params read{};
+                    if (!pipeline.outputFrame(phase)) return;
+                    read.tex = phase.planes[0].texture;
+                    read.ptr = output.data();
+                    if (!pl_tex_download(vk->gpu, &read)) {
+                        qCritical() << "Static AFG phase download failed"; app.quit(); return;
+                    }
+                    for (size_t n = 0; n < input.size(); ++n)
+                        if (n % 4 != 3 && std::abs(int(input[n]) - int(output[n])) > 1) {
+                            qCritical() << "Static AFG phase changed RGB pixels" << id << pipeline.outputPhase();
+                            app.quit(); return;
+                        }
+                    ++verifiedStaticPhases;
+                }
                 if (present)
                 {
                     pl_frame image{};
@@ -410,6 +431,7 @@ int main(int argc, char **argv)
                 }
                 if (completed == 15 && app.arguments().contains("--switch-fg-backend"))
                 {
+                    presentationEpochStart = completed;
                     configured = false;
                     options.afg = !options.afg;
                     pipeline.prepare(vk, {uint32_t(width), uint32_t(height)}, options, false);
@@ -417,6 +439,7 @@ int main(int argc, char **argv)
                 if (completed == 15 &&
                     (app.arguments().contains("--resize") || app.arguments().contains("--reset")))
                 {
+                    presentationEpochStart = completed;
                     configured = false;
                     if (app.arguments().contains("--resize"))
                     {
@@ -430,6 +453,14 @@ int main(int argc, char **argv)
                 }
                 if (completed >= targetFrames || (soak && duration.elapsed() >= soak * 1000))
                 {
+                    if (staticScene && options.afg) {
+                        const int expected = (completed - 1) * (int(options.fgMultiplier) - 1);
+                        if (verifiedStaticPhases != expected) {
+                            qCritical() << "Static AFG phase count" << verifiedStaticPhases << "expected" << expected;
+                            app.quit(); return;
+                        }
+                        qInfo() << "Verified static AFG RGB phases=" << verifiedStaticPhases;
+                    }
                     if (options.vsrQuality && !app.arguments().contains("--expect-vsr-unavailable") && (!vsrObserved || vsrGpuMs <= 0)) {
                         qCritical() << "VSR not active or GPU timing missing"; app.quit(); return;
                     }
@@ -464,8 +495,8 @@ int main(int argc, char **argv)
                         return;
                     }
                     if ((present || app.arguments().contains("--verify-phases")) && options.frameGeneration &&
-                        (pipeline.realPresentedCount() + 2 < uint64_t(completed) ||
-                         pipeline.generatedPresentedCount() + 2 * (options.fgMultiplier - 1) < uint64_t(completed) * (options.fgMultiplier - 1))) {
+                        (pipeline.realPresentedCount() + 2 < uint64_t(completed - presentationEpochStart) ||
+                         pipeline.generatedPresentedCount() + 2 * (options.fgMultiplier - 1) < uint64_t(completed - presentationEpochStart) * (options.fgMultiplier - 1))) {
                         qCritical() << "FG did not present both real and generated phases";
                         app.quit(); return;
                     }

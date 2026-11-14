@@ -1806,9 +1806,14 @@ struct Worker
         gpu->resolveTimers();
         gpu->submit();
         auto stageTimes = gpu->timings();
+        // AFG executes our shaders: completion with a valid frame pair is sufficient.
+        // Static (including black) scenes legitimately have identical phases. The
+        // distinct-image/driver-route probe below is only for the opaque DLSS runtime.
+        if (flowBackend && !reset)
+            fgVerified = true;
         // Verified once per worker: a scene cut resets history, it does not change the
         // runtime route, so it must not trigger full-resolution CPU readbacks again.
-        if (hasFg() && !fgVerified)
+        if (fg && !fgVerified)
         {
             auto real = gpu->pixels(s.real);
             if (!reset && previousRealPixels.size() == real.size() && proxyRouteConfirmed())
