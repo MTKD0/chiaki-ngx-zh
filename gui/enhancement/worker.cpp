@@ -763,6 +763,9 @@ struct OpticalFlow
     Texture &lumaBefore() { return current; }
     NvOFGPUBufferHandle cur = nullptr, prev = nullptr, flow = nullptr;
     bool history = false;
+    // reversed: flow from the previous frame to the current one (diagnostic dumps).
+    bool reversed = false;
+    unsigned gridSize = 4;
     ~OpticalFlow()
     {
         if (handle)
@@ -799,14 +802,15 @@ struct OpticalFlow
         NV_OF_INIT_PARAMS p{};
         p.width = w;
         p.height = h;
-        p.outGridSize = NV_OF_OUTPUT_VECTOR_GRID_SIZE_4;
+        p.outGridSize = gridSize == 1 ? NV_OF_OUTPUT_VECTOR_GRID_SIZE_1
+                        : gridSize == 2 ? NV_OF_OUTPUT_VECTOR_GRID_SIZE_2 : NV_OF_OUTPUT_VECTOR_GRID_SIZE_4;
         p.mode = NV_OF_MODE_OPTICALFLOW;
         p.perfLevel = level;
         p.inputBufferFormat = NV_OF_BUFFER_FORMAT_GRAYSCALE8;
         ofcheck(api.nvOFInit(handle, &p), "NVOFA init");
         current = gpu.texture(w, h, DXGI_FORMAT_R8_UNORM);
         previous = gpu.texture(w, h, DXGI_FORMAT_R8_UNORM);
-        vectors = gpu.texture((w + 3) / 4, (h + 3) / 4, DXGI_FORMAT_R16G16_SINT);
+        vectors = gpu.texture((w + gridSize - 1) / gridSize, (h + gridSize - 1) / gridSize, DXGI_FORMAT_R16G16_SINT);
         for (auto item : {std::make_pair(&current, &cur), std::make_pair(&previous, &prev),
                           std::make_pair(&vectors, &flow)})
         {
@@ -836,8 +840,8 @@ struct OpticalFlow
             gpu.submit();
         }
         NV_OF_EXECUTE_INPUT_PARAMS_D3D12 in{};
-        in.inputFrame = cur;
-        in.referenceFrame = prev;
+        in.inputFrame = reversed ? prev : cur;
+        in.referenceFrame = reversed ? cur : prev;
         in.disableTemporalHints = reset ? NV_OF_TRUE : NV_OF_FALSE;
         NV_OF_FENCE_POINT available{gpu.fence.Get(), gpu.tick};
         in.numFencePoints = 1;
@@ -922,7 +926,20 @@ struct Worker
     Texture matchError, splatBits, fieldA, fieldB, errorPair;
     bool flowProjected = false, flowSharp = true;
     std::array<Texture, MaxGeneratedFrames> fgPrivate;
-    Gpu::Readback thumbnailReadback, vectorReadback;
+    Gpu::Readback thumbnailReadback, vectorReadback, backwardReadback;
+    // Diagnostics for offline experiments, off by default:
+    //   CHIAKI_ENHANCEMENT_FLOW_GRID=1|2|4      NVOFA output grid (default 4); falls back to 4
+    //                                          when the driver rejects the size.
+    //   CHIAKI_ENHANCEMENT_FLOW_BACKWARD=on     also estimate previous -> current flow. It is
+    //                                          only dumped (flowb_*.s16); no shader uses it yet.
+    std::unique_ptr<OpticalFlow> opticalBack;
+    unsigned flowGrid = 4;
+    static unsigned requestedFlowGrid()
+    {
+        if (environmentIs(L"CHIAKI_ENHANCEMENT_FLOW_GRID", L"1")) return 1;
+        if (environmentIs(L"CHIAKI_ENHANCEMENT_FLOW_GRID", L"2")) return 2;
+        return 4;
+    }
     bool motionRefine = false, fgFallback = false, previousRealValid = false;
     // flowBackend: generated frames come from interpolateMain instead of DLSS FG.
     // zeroVectors: diagnostic, DLSS FG receives zero motion vectors.
@@ -1008,6 +1025,7 @@ struct Worker
             fg.reset();
             vsr.reset();
             clearNr();
+            opticalBack.reset();
             optical.reset();
         }
         if (proxy)
@@ -1162,18 +1180,50 @@ struct Worker
         {
             try
             {
-                optical.reset(new OpticalFlow);
                 flowSize = scaledFlowExtent(inputSize);
                 const auto level = flowLevel(flowSize);
-                optical->init(*gpu, flowSize.width, flowSize.height, level);
-                std::fprintf(stderr, "[RTX][Flow] size=%ux%u input=%ux%u perf_level=%d\n", flowSize.width, flowSize.height,
-                    inputSize.width, inputSize.height, int(level));
+                flowGrid = requestedFlowGrid();
+                optical.reset(new OpticalFlow);
+                optical->gridSize = flowGrid;
+                try
+                {
+                    optical->init(*gpu, flowSize.width, flowSize.height, level);
+                }
+                catch (const std::exception &e)
+                {
+                    if (flowGrid == 4)
+                        throw;
+                    std::fprintf(stderr, "[RTX][Flow] grid %u rejected (%s); using 4\n", flowGrid, e.what());
+                    flowGrid = 4;
+                    optical.reset(new OpticalFlow);
+                    optical->init(*gpu, flowSize.width, flowSize.height, level);
+                }
+                std::fprintf(stderr, "[RTX][Flow] size=%ux%u input=%ux%u perf_level=%d grid=%u cells=%ux%u\n",
+                    flowSize.width, flowSize.height, inputSize.width, inputSize.height, int(level), flowGrid,
+                    optical->vectors.width, optical->vectors.height);
+                if (environmentSwitch(L"CHIAKI_ENHANCEMENT_FLOW_BACKWARD") == 1)
+                {
+                    try
+                    {
+                        opticalBack.reset(new OpticalFlow);
+                        opticalBack->gridSize = flowGrid;
+                        opticalBack->reversed = true;
+                        opticalBack->init(*gpu, flowSize.width, flowSize.height, level);
+                        std::fprintf(stderr, "[RTX][Flow] backward flow enabled\n");
+                    }
+                    catch (const std::exception &e)
+                    {
+                        std::fprintf(stderr, "[RTX][Flow] backward flow unavailable: %s\n", e.what());
+                        opticalBack.reset();
+                    }
+                }
             }
             catch (const std::exception &e)
             {
                 nrError = fgError = e.what();
                 clearNr();
                 fg.reset();
+                opticalBack.reset();
                 optical.reset();
             }
         }
@@ -1327,6 +1377,8 @@ struct Worker
             gpu->run("scaleMain", flowInput, thumbnail);
             gpu->queueReadback(thumbnailReadback, thumbnail);
             optical->prepare(*gpu, *flowInput);
+            if (opticalBack)
+                opticalBack->prepare(*gpu, *flowInput);
             gpu->submit();
             auto sample = gpu->readback(thumbnailReadback, thumbnail);
             if (!reset && sample.size() == previousThumbnail.size())
@@ -1355,6 +1407,8 @@ struct Worker
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] first optical-flow dispatch\n");
             optical->execute(*gpu, reset);
+            if (opticalBack)
+                opticalBack->execute(*gpu, reset);
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] optical-flow completed\n");
         }
@@ -1369,6 +1423,22 @@ struct Worker
                 std::to_string(optical->vectors.width) + "x" + std::to_string(optical->vectors.height) + ".s16");
             std::ofstream out(file, std::ios::binary);
             out.write(reinterpret_cast<const char *>(grid.data()), static_cast<std::streamsize>(grid.size()));
+            if (opticalBack)
+            {
+                // Same layout; vectors point from the previous frame to the current one and
+                // live on the previous frame's grid.
+                gpu->begin();
+                gpu->queueReadback(backwardReadback, opticalBack->vectors);
+                gpu->submit();
+                const auto backward = gpu->readback(backwardReadback, opticalBack->vectors);
+                const fs::path backwardFile = dumpDirectory / ("flowb_" + std::to_string(c.frameId) + "_" +
+                    std::to_string(opticalBack->vectors.width) + "x" + std::to_string(opticalBack->vectors.height) + ".s16");
+                std::ofstream backwardOut(backwardFile, std::ios::binary);
+                backwardOut.write(reinterpret_cast<const char *>(backward.data()), static_cast<std::streamsize>(backward.size()));
+                std::fprintf(stderr, "[RTX][Dump] frame=%llu backward=%ux%u written=%u\n",
+                    static_cast<unsigned long long>(c.frameId), opticalBack->vectors.width, opticalBack->vectors.height,
+                    unsigned(bool(backwardOut)));
+            }
             std::fprintf(stderr, "[RTX][Dump] frame=%llu reset=%u flow=%ux%u input=%ux%u output=%ux%u written=%u\n",
                 static_cast<unsigned long long>(c.frameId), unsigned(reset), optical->vectors.width, optical->vectors.height,
                 inputSize.width, inputSize.height, c.width, c.height, unsigned(bool(out)));
@@ -1651,9 +1721,14 @@ struct Worker
                             gpu->run("resolveMain", &splatBits, fieldA, nullptr, nullptr, &optical->vectors, 0,
                                      outputPerFlowX, outputPerFlowY);
                             Texture *field = &fieldA, *spare = &fieldB;
-                            for (float stride : {32.0f, 16.0f, 8.0f, 4.0f, 2.0f, 1.0f, 1.0f})
+                            // Strides are tuned for the 4-pixel grid; a finer grid needs the same
+                            // reach in pixels and two extra unit passes.
+                            const float reach = 4.0f / float(flowGrid);
+                            for (float stride : {32.0f, 16.0f, 8.0f, 4.0f, 2.0f, 1.0f, 1.0f, -1.0f, -1.0f})
                             {
-                                const float step[8] = {stride, 0, 0, 0, 0, 0, 0, 0};
+                                if (stride < 0 && flowGrid == 4)
+                                    continue;
+                                const float step[8] = {stride < 0 ? 1.0f : stride * reach, 0, 0, 0, 0, 0, 0, 0};
                                 gpu->run("fillMain", field, *spare, nullptr, nullptr, nullptr, 0, 1, 1, step);
                                 std::swap(field, spare);
                             }

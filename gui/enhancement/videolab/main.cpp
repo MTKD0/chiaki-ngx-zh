@@ -418,6 +418,8 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("flow-scale", "Optical flow resolution relative to the input, 0.25-1. Smaller follows larger motion.", "factor");
     add("flow-select", "Flow backend variant: projected (default), direct or candidates.", "variant");
     add("flow-bilinear", "Flow backend: sample moved pixels bilinearly instead of Catmull-Rom.");
+    add("flow-grid", "NVOFA output grid in pixels: 1, 2 or 4 (default).", "pixels");
+    add("flow-backward", "Also estimate previous-to-current flow; written by --dump-flow as flowb_*.s16.");
     add("dump-flow", "Write the worker's raw optical-flow grids (.s16) into this directory.", "dir");
     add("dump-range", "Worker frame ids to dump with --dump-flow, as first-last.", "range");
     add("no-motion-refine", "Use raw optical flow: no global motion model or guided upsampling.");
@@ -533,6 +535,18 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     }
     if (parser.isSet("flow-bilinear"))
         qputenv("CHIAKI_ENHANCEMENT_FLOW_SHARP", "off");
+    if (parser.isSet("flow-grid"))
+    {
+        const QString grid = parser.value("flow-grid");
+        if (grid != "1" && grid != "2" && grid != "4")
+        {
+            qCritical() << "--flow-grid must be 1, 2 or 4";
+            return false;
+        }
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_GRID", grid.toLatin1());
+    }
+    if (parser.isSet("flow-backward"))
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_BACKWARD", "on");
     if (parser.isSet("dump-flow"))
     {
         const QDir directory(parser.value("dump-flow"));

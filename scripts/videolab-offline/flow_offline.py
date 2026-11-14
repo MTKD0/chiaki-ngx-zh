@@ -125,8 +125,8 @@ class Pair:
                         sample(self.prev, qx + t_prev * vx, qy + t_prev * vy)) @ LUMA
         return e * 0.25
 
-    def finish(self, g, t, use_held):
-        """interpolateProjectedMain: g and use_held are per output pixel."""
+    def finish(self, g, t, use_held, block_error=None):
+        """interpolateProjectedMain: g, use_held and block_error are per output pixel."""
         cx, cy = self.px - (1 - t) * g[..., 0], self.py - (1 - t) * g[..., 1]
         qx, qy = self.px + t * g[..., 0], self.py + t * g[..., 1]
         current = np.clip(sample(self.cur, cx, cy, self.order), 0, 1)
@@ -135,7 +135,8 @@ class Pair:
         pin = (qx >= 0) & (qx <= self.w) & (qy >= 0) & (qy <= self.h)
         mismatch = np.abs(current - previous) @ LUMA
         nearer = 1.0 if t >= 0.5 else 0.0
-        w = t + (nearer - t) * smoothstep(AGREE[0], AGREE[1], mismatch)
+        # projected: the occlusion decision follows the blurred block error.
+        w = t + (nearer - t) * smoothstep(AGREE[0], AGREE[1], mismatch if block_error is None else block_error)
         only_c, only_p = cin & ~pin, pin & ~cin
         w = np.where(only_c, 1.0, np.where(only_p, 0.0, w))
         moved = previous * (1 - w[..., None]) + current * w[..., None]
@@ -181,7 +182,9 @@ def projected(pair, t):
     valid[target[order]] = True
     field, valid = field.reshape(gh, gw, 2), valid.reshape(gh, gw)
     # fillMain: holes take the mean of valid neighbours at each stride.
-    for stride in FILL_STRIDES:
+    reach = max(1, int(round(4.0 / pair.cell_w)))      # the strides are tuned for the 4-pixel grid
+    strides = [s * reach for s in FILL_STRIDES] + ([1, 1] if reach > 1 else [])
+    for stride in strides:
         total, count = np.zeros_like(field), np.zeros((gh, gw), np.float32)
         for dy in (-stride, 0, stride):
             for dx in (-stride, 0, stride):
@@ -202,7 +205,7 @@ def projected(pair, t):
     moved = uniform_filter(pair.block_error(field[..., 0], field[..., 1], 1 - t, t), 3, mode='nearest')
     still = uniform_filter(pair.block_error(0 * field[..., 0], 0 * field[..., 1], 0.0, 0.0), 3, mode='nearest')
     weight = smoothstep(-HELD_MARGIN, 2 * HELD_MARGIN, moved - still).astype(np.float32)
-    return pair.finish(pair.upsample(field), t, pair.upsample(weight))
+    return pair.finish(pair.upsample(field), t, pair.upsample(weight), pair.upsample(moved.astype(np.float32)))
 
 
 VARIANTS = {'blend': blend, 'direct': direct, 'projected': projected}

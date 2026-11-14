@@ -353,7 +353,8 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     target[p.xy] = float4(moved*0.25,still*0.25,0,0);
 }
 // a = heldMain's output, b = field. extraA.w = margin. Output xy = vector,
-// z = weight of the "did not move" result (3x3 blurred decision).
+// z = weight of the "did not move" result (3x3 blurred decision), w = blurred
+// block error along the vector.
 [numthreads(8,8,1)] void weightMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     int2 limit = int2(outputSize)-1;
@@ -361,7 +362,7 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i)
         e += a.Load(int3(clamp(int2(p.xy)+int2(i,j),int2(0,0),limit),0)).xy;
     e /= 9.0;
-    target[p.xy] = float4(b.Load(int3(p.xy,0)).xy,smoothstep(-extraA.w,2.0*extraA.w,e.x-e.y),0);
+    target[p.xy] = float4(b.Load(int3(p.xy,0)).xy,smoothstep(-extraA.w,2.0*extraA.w,e.x-e.y),e.x);
 }
 // a = previous real, b = current real, c = weightMain's output (grid).
 // extraA = (t, consistent below, inconsistent above), extraB.x > 0.5 = Catmull-Rom.
@@ -384,9 +385,11 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     }
     bool currentInside = all(fromCurrent >= 0.0) && all(fromCurrent <= 1.0);
     bool previousInside = all(fromPrevious >= 0.0) && all(fromPrevious <= 1.0);
-    float mismatch = dot(abs(current-previous),float3(0.299,0.587,0.114));
+    // Where the two frames disagree along the vector, only the nearer one is used.
+    // The decision follows the blurred block error, not this pixel's own difference:
+    // offline it scored slightly higher on every clip and has no per-pixel edges.
     float nearer = t >= 0.5 ? 1.0 : 0.0;
-    float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,mismatch));
+    float w = lerp(t,nearer,smoothstep(extraA.y,extraA.z,field.w));
     float useHeld = field.z;
     if(currentInside && !previousInside) { w = 1.0; useHeld = 0.0; }
     if(previousInside && !currentInside) { w = 0.0; useHeld = 0.0; }

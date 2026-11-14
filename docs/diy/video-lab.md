@@ -115,6 +115,8 @@ cd release/ngx
 | `--flow-scale 0.5` | 光流分辨率相对输入的比例（0.25–1，默认 1）。缩小后可跟踪更大的位移，向量更粗 | `CHIAKI_ENHANCEMENT_FLOW_SCALE` |
 | `--flow-select projected\|direct\|candidates` | 自建后端的插值方式。默认 `projected`（向量前向投影）；`direct` 为逐像素两假设，`candidates` 为半分辨率候选选择 | `CHIAKI_ENHANCEMENT_FLOW_SELECT` |
 | `--flow-bilinear` | 自建后端的补偿取样改用双线性（默认 Catmull-Rom 双三次，更锐但 PSNR 略低） | `CHIAKI_ENHANCEMENT_FLOW_SHARP=off` |
+| `--flow-grid 1\|2\|4` | NVOFA 输出网格（像素），默认 4。驱动不接受时退回 4。网格为 1 时格数超过投影方案的上限，自建后端会退回 `direct` | `CHIAKI_ENHANCEMENT_FLOW_GRID` |
+| `--flow-backward` | 诊断：额外估计“上一帧→当前帧”的反向光流，只随 `--dump-flow` 写成 `flowb_*.s16`，目前没有着色器使用；每帧多一次光流计算 | `CHIAKI_ENHANCEMENT_FLOW_BACKWARD=on` |
 | `--dump-flow <目录> --dump-range 首-尾` | 诊断：把指定帧号范围内增强进程的原始光流网格写成 `flow_<帧号>_<宽>x<高>.s16` | `CHIAKI_ENHANCEMENT_DUMP_FLOW`、`CHIAKI_ENHANCEMENT_DUMP_RANGE` |
 | `--chain nr-first` | 配合 `--vsr`：恢复旧顺序（NR 在 VSR 之前）；默认 `vsr-first` | `CHIAKI_ENHANCEMENT_CHAIN` |
 
