@@ -333,6 +333,120 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     SORT2(v[4],v[2])
     target[p.xy] = float4(v[4],1,0);
 }
+// --- Relocking cells that latched onto the wrong repeat of a periodic surface ---
+// On layered facades the flow locks patches one floor off: both vectors match
+// well, and the seam between the patches tears. A cell far from its region's
+// motion takes the vector of its nearest agreeing neighbours when that fits about
+// as well. On textured surroundings the lenient block mean decides; on flat ones
+// (sky) the worst pixel does, so a thin wire keeps the motion that only it has.
+//   reduceMain       4x4 component-wise median (run twice: 16x16 cells)
+//   medianFieldMain  on the coarse grid
+//   outlierMain      flags cells further than extraA.x pixels from the regional vector
+//   fillMain         candidate vectors for the flagged cells from their neighbours
+//   packMain         own and candidate vector side by side
+//   relockErrorMain  block-mean and worst-pixel error of both
+//   relockMain       the decision
+// textureMain runs once per frame: local contrast of the current frame per cell.
+[numthreads(8,8,1)] void reduceMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 limit = int2(sourceSize)-1;
+    float2 v[16];
+    for(int j=0;j<4;++j) for(int i=0;i<4;++i)
+        v[j*4+i] = a.Load(int3(min(int2(p.xy)*4+int2(i,j),limit),0)).xy;
+    // Median of 16 by rank: the mean of the 8th and 9th smallest, per component.
+    float2 low = float2(0,0), high = float2(0,0);
+    for(int n=0;n<16;++n) {
+        int rx = 0, ry = 0;
+        for(int m=0;m<16;++m) {
+            rx += (v[m].x < v[n].x || (v[m].x == v[n].x && m < n)) ? 1 : 0;
+            ry += (v[m].y < v[n].y || (v[m].y == v[n].y && m < n)) ? 1 : 0;
+        }
+        if(rx == 7) low.x = v[n].x;
+        if(rx == 8) high.x = v[n].x;
+        if(ry == 7) low.y = v[n].y;
+        if(ry == 8) high.y = v[n].y;
+    }
+    target[p.xy] = float4((low+high)*0.5,1,0);
+}
+// a = field (grid), b = regional vectors (one per 16x16 cells). extraA.x = distance in
+// output pixels. Output xy = vector, z = 0 where the cell is far from its region.
+[numthreads(8,8,1)] void outlierMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    uint cw, ch; b.GetDimensions(cw,ch);
+    float2 own = a.Load(int3(p.xy,0)).xy;
+    float2 region = b.SampleLevel(clampSampler,(p.xy+0.5)/(16.0*float2(cw,ch)),0).xy;
+    target[p.xy] = float4(own,length(own-region) > extraA.x ? 0.0 : 1.0,0);
+}
+[numthreads(8,8,1)] void packMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    target[p.xy] = float4(a.Load(int3(p.xy,0)).xy,b.Load(int3(p.xy,0)).xy);
+}
+// a = previous real, b = current real, c = packMain's output. extraA.x = t.
+// Output: block mean of own, of the candidate, worst pixel of own, of the candidate.
+[numthreads(8,8,1)] void relockErrorMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float4 pair = c.Load(int3(p.xy,0));
+    if(all(pair.xy == pair.zw)) { target[p.xy] = float4(0,0,0,0); return; }
+    float t = extraA.x;
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    float2 x = (p.xy+0.5)*cell;
+    float3 luma = float3(0.299,0.587,0.114);
+    float4 e = float4(0,0,0,0);
+    for(int k=0;k<4;++k) {
+        float2 q = x+quad[k]*cell;
+        e.x += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*pair.xy)/size,0).rgb-
+                       a.SampleLevel(clampSampler,(q+t*pair.xy)/size,0).rgb),luma);
+        e.y += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*pair.zw)/size,0).rgb-
+                       a.SampleLevel(clampSampler,(q+t*pair.zw)/size,0).rgb),luma);
+    }
+    e.xy *= 0.25;
+    for(int j=0;j<4;++j) for(int i=0;i<4;++i) {
+        float2 q = x+(float2(i,j)*0.25-0.375)*cell;
+        e.z = max(e.z,dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*pair.xy)/size,0).rgb-
+                              a.SampleLevel(clampSampler,(q+t*pair.xy)/size,0).rgb),luma));
+        e.w = max(e.w,dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*pair.zw)/size,0).rgb-
+                              a.SampleLevel(clampSampler,(q+t*pair.zw)/size,0).rgb),luma));
+    }
+    target[p.xy] = e;
+}
+// a = relockErrorMain's output, b = packMain's output, c = textureMain's output.
+// extraA = (margin, contrast above which the surroundings count as textured).
+[numthreads(8,8,1)] void relockMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float4 pair = b.Load(int3(p.xy,0));
+    if(all(pair.xy == pair.zw)) { target[p.xy] = float4(pair.xy,1,0); return; }
+    int2 limit = int2(outputSize)-1;
+    float2 mean = float2(0,0);
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i)
+        mean += a.Load(int3(clamp(int2(p.xy)+int2(i,j),int2(0,0),limit),0)).xy;
+    mean /= 9.0;
+    float2 worst = a.Load(int3(p.xy,0)).zw;
+    bool textured = c.Load(int3(p.xy,0)).r > extraA.y;
+    bool plausible = textured ? (mean.y <= mean.x+extraA.x) : (worst.y-worst.x <= extraA.x);
+    target[p.xy] = float4(plausible ? pair.zw : pair.xy,1,0);
+}
+// a = current real (output size). Output r = mean absolute luma step over two pixels
+// (horizontal plus vertical) in the 5x5 cells around this one.
+[numthreads(8,8,1)] void textureMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    int2 limit = int2(outputSize)-1;
+    float3 luma = float3(0.299,0.587,0.114);
+    float total = 0;
+    for(int j=-2;j<=2;++j) for(int i=-2;i<=2;++i) {
+        float2 x = (clamp(int2(p.xy)+int2(i,j),int2(0,0),limit)+0.5)*cell;
+        for(int k=0;k<4;++k) {
+            float2 q = x+quad[k]*cell;
+            total += abs(dot(a.SampleLevel(clampSampler,(q+float2(1,0))/size,0).rgb-
+                             a.SampleLevel(clampSampler,(q-float2(1,0))/size,0).rgb,luma));
+            total += abs(dot(a.SampleLevel(clampSampler,(q+float2(0,1))/size,0).rgb-
+                             a.SampleLevel(clampSampler,(q-float2(0,1))/size,0).rgb,luma));
+        }
+    }
+    target[p.xy] = float4(total/100.0,0,0,0);
+}
 // a = previous real, b = current real, c = field (grid). extraA.x = t.
 // Output r = block error along the vector, g = block error without motion.
 [numthreads(8,8,1)] void heldMain(uint3 p : SV_DispatchThreadID) {

@@ -350,7 +350,9 @@ struct Gpu
         {
             for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain",
                                       "matchMain", "clearBitsMain", "splatMain", "resolveMain", "fillMain",
-                                      "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain"})
+                                      "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain",
+                                      "reduceMain", "outlierMain", "packMain", "relockErrorMain", "relockMain",
+                                      "textureMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -924,6 +926,11 @@ struct Worker
     // Projected flow backend, all at the flow grid's size: match error of every grid
     // vector, packed splat winners, two ping-pong vector fields and the block errors.
     Texture matchError, splatBits, fieldA, fieldB, errorPair;
+    // Relocking (see worker_shaders.h.in): regional vectors at 1/4 and 1/16 of the grid,
+    // candidate fields, own+candidate side by side, their errors and the local contrast.
+    // CHIAKI_ENHANCEMENT_FLOW_RELOCK=off disables it.
+    Texture coarseA, coarseB, coarseC, fieldC, fieldD, packedVectors, relockErrors, textureGrid;
+    bool flowRelock = false;
     bool flowProjected = false, flowSharp = true;
     std::array<Texture, MaxGeneratedFrames> fgPrivate;
     Gpu::Readback thumbnailReadback, vectorReadback, backwardReadback;
@@ -1282,6 +1289,19 @@ struct Worker
                 fieldA = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
                 fieldB = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
                 errorPair = gpu->texture(gw, gh, DXGI_FORMAT_R16G16_FLOAT);
+                flowRelock = environmentSwitch(L"CHIAKI_ENHANCEMENT_FLOW_RELOCK") != 0;
+                if (flowRelock)
+                {
+                    const unsigned aw = (gw + 3) / 4, ah = (gh + 3) / 4, bw = (aw + 3) / 4, bh = (ah + 3) / 4;
+                    coarseA = gpu->texture(aw, ah, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    coarseB = gpu->texture(bw, bh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    coarseC = gpu->texture(bw, bh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    fieldC = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    fieldD = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    packedVectors = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    relockErrors = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                    textureGrid = gpu->texture(gw, gh, DXGI_FORMAT_R16_FLOAT);
+                }
             }
         }
         if (optical)
@@ -1299,6 +1319,7 @@ struct Worker
         std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s flow_select=%s\n",
             unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow",
             flowProjected ? "projected" : flowCandidates ? "candidates" : "direct");
+        std::fprintf(stderr, "[RTX][Motion] flow_relock=%u\n", unsigned(flowProjected && flowRelock));
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1717,8 +1738,12 @@ struct Worker
                 const float outputPerFlowX = float(c.width) / flowSize.width;
                 const float outputPerFlowY = float(c.height) / flowSize.height;
                 if (flowProjected && previousRealValid && !reset)
+                {
                     gpu->run("matchMain", &previousReal, matchError, processed, nullptr, &optical->vectors, 0,
                              outputPerFlowX, outputPerFlowY);
+                    if (flowRelock)
+                        gpu->run("textureMain", processed, textureGrid);
+                }
                 if (previousRealValid && !reset)
                     for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
                         const float t = float(n + 1) / float(c.fgMultiplier);
@@ -1745,6 +1770,34 @@ struct Worker
                             }
                             gpu->run("medianFieldMain", field, *spare);
                             std::swap(field, spare);
+                            if (flowRelock)
+                            {
+                                // Regional motion: 16x16-cell medians, then a 3x3 median of those.
+                                gpu->run("reduceMain", field, coarseA);
+                                gpu->run("reduceMain", &coarseA, coarseB);
+                                gpu->run("medianFieldMain", &coarseB, coarseC);
+                                // Cells more than 6 pixels (at 1080p) from it look for a better lock.
+                                const float distance[8] = {6.0f * float(c.height) / 1080.0f, 0, 0, 0, 0, 0, 0, 0};
+                                gpu->run("outlierMain", field, fieldC, &coarseC, nullptr, nullptr, 0, 1, 1, distance);
+                                Texture *candidate = &fieldC, *scratch = &fieldD;
+                                for (float stride : {8.0f, 4.0f, 2.0f, 1.0f, 1.0f})
+                                {
+                                    const float step[8] = {stride * reach, 0, 0, 0, 0, 0, 0, 0};
+                                    gpu->run("fillMain", candidate, *scratch, nullptr, nullptr, nullptr, 0, 1, 1, step);
+                                    std::swap(candidate, scratch);
+                                }
+                                gpu->run("packMain", field, packedVectors, candidate);
+                                const float when[8] = {t, 0, 0, 0, 0, 0, 0, 0};
+                                gpu->run("relockErrorMain", &previousReal, relockErrors, processed, &packedVectors,
+                                         nullptr, 0, 1, 1, when);
+                                // Margin 0.05; surroundings with contrast above 0.04 count as textured.
+                                const float decide[8] = {0.05f, 0.04f, 0, 0, 0, 0, 0, 0};
+                                gpu->run("relockMain", &relockErrors, *spare, &packedVectors, &textureGrid,
+                                         nullptr, 0, 1, 1, decide);
+                                std::swap(field, spare);
+                                gpu->run("medianFieldMain", field, *spare);
+                                std::swap(field, spare);
+                            }
                             const float moment[8] = {t, 0, 0, 0, 0, 0, 0, 0};
                             gpu->run("heldMain", &previousReal, errorPair, processed, field, nullptr, 0, 1, 1, moment);
                             const float margin[8] = {0, 0, 0, 0.01f, 0, 0, 0, 0};
