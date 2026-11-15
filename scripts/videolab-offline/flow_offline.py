@@ -15,8 +15,10 @@ real frame is source frame 4*(N-1), the previous one 4*(N-2) and phase p (1..3) 
 scored against source frame 4*(N-2)+p. Source frames are counted from 0.
 
 Variants:
-    projected  matchMain, splatMain, resolveMain, fillMain, medianFieldMain, heldMain,
-               weightMain and interpolateProjectedMain of worker_shaders.h.in
+    projected  matchMain, splatMain, resolveMain, fillMain, medianFieldMain, the relocking
+               passes (reduceMain .. relockMain, textureMain), heldMain, weightMain and
+               interpolateProjectedMain of worker_shaders.h.in
+    plain      projected without relocking (CHIAKI_ENHANCEMENT_FLOW_RELOCK=off)
     direct     interpolateDirectMain
     blend      cross-fade of the two real frames
 
@@ -39,6 +41,10 @@ FILL_STRIDES = (32, 16, 8, 4, 2, 1, 1)
 MATCH_THRESHOLD = 0.10      # splatMain: vectors matching worse than this are dropped
 AGREE = (0.06, 0.20)        # blend the two samples below, use the nearer one above
 HELD_MARGIN = 0.01          # weightMain / interpolateDirectMain
+RELOCK_FAR = 6.0            # outlierMain: pixels at 1080p from the regional vector
+RELOCK_MARGIN = 0.05        # relockMain
+RELOCK_TEXTURED = 0.04      # relockMain: local contrast above which the block mean decides
+RELOCK_STRIDES = (8, 4, 2, 1, 1)
 DEAD_ZONE = 0.2             # interpolateDirectMain, pixels
 
 
@@ -163,7 +169,87 @@ def direct(pair, t):
     return np.where(dead[..., None], blend(pair, t), out)
 
 
-def projected(pair, t):
+def fill(field, valid, strides):
+    """fillMain: invalid cells take the mean of their valid neighbours at each stride."""
+    gh, gw = field.shape[:2]
+    field, valid = field.copy(), valid.copy()
+    for stride in strides:
+        total, count = np.zeros_like(field), np.zeros((gh, gw), np.float32)
+        for dy in (-stride, 0, stride):
+            for dx in (-stride, 0, stride):
+                if dx == 0 and dy == 0:
+                    continue
+                rows = np.clip(np.arange(gh) + dy, 0, gh - 1)
+                columns = np.clip(np.arange(gw) + dx, 0, gw - 1)
+                neighbour_valid = valid[rows][:, columns]
+                total += np.where(neighbour_valid[..., None], field[rows][:, columns], 0)
+                count += neighbour_valid
+        grow = ~valid & (count > 0)
+        field[grow] = total[grow] / count[grow][:, None]
+        valid = valid | grow
+    field[~valid] = 0
+    return field
+
+
+def median3(field):
+    return np.stack([median_filter(field[..., c], 3, mode='nearest') for c in range(2)], -1)
+
+
+def reduce4(field):
+    """reduceMain: component-wise median of every 4x4 tile, edge cells repeated."""
+    h, w = (field.shape[0] + 3) // 4, (field.shape[1] + 3) // 4
+    padded = np.pad(field, ((0, h * 4 - field.shape[0]), (0, w * 4 - field.shape[1]), (0, 0)), mode='edge')
+    tiles = padded.reshape(h, 4, w, 4, 2).transpose(0, 2, 1, 3, 4).reshape(h, w, 16, 2)
+    return np.median(tiles, axis=2).astype(np.float32)
+
+
+def texture_grid(pair):
+    """textureMain: mean absolute luma step over two pixels in the 5x5 cells around each cell."""
+    luma = pair.cur @ LUMA
+    cells = np.zeros((pair.gh, pair.gw), np.float32)
+    for ox, oy in QUAD:
+        qx, qy = pair.cx + ox * pair.cell_w, pair.cy + oy * pair.cell_h
+        cells += np.abs(sample(luma, qx + 1, qy) - sample(luma, qx - 1, qy))
+        cells += np.abs(sample(luma, qx, qy + 1) - sample(luma, qx, qy - 1))
+    return uniform_filter(cells, 5, mode='nearest') / 4.0
+
+
+def worst_error(pair, vx, vy, t):
+    """relockErrorMain: largest per-tap error of the 16 taps of a cell."""
+    worst = np.zeros((pair.gh, pair.gw), np.float32)
+    for j in range(4):
+        for i in range(4):
+            qx = pair.cx + (i * 0.25 - 0.375) * pair.cell_w
+            qy = pair.cy + (j * 0.25 - 0.375) * pair.cell_h
+            e = np.abs(sample(pair.cur, qx - (1 - t) * vx, qy - (1 - t) * vy) -
+                       sample(pair.prev, qx + t * vx, qy + t * vy)) @ LUMA
+            worst = np.maximum(worst, e)
+    return worst
+
+
+def relock(pair, field, t, reach):
+    """reduceMain x2, medianFieldMain, outlierMain, fillMain, packMain, relockErrorMain, relockMain."""
+    coarse = median3(reduce4(reduce4(field)))
+    gy, gx = np.mgrid[0:pair.gh, 0:pair.gw].astype(np.float32)
+    region = sample(coarse, (gx + 0.5) / 16.0, (gy + 0.5) / 16.0)
+    far = RELOCK_FAR * pair.h / 1080.0
+    outlier = np.sqrt(((field - region) ** 2).sum(-1)) > far
+    candidate = fill(field, ~outlier, [s * reach for s in RELOCK_STRIDES])
+    differs = (candidate != field).any(-1)
+    own_mean = pair.block_error(field[..., 0], field[..., 1], 1 - t, t)
+    candidate_mean = pair.block_error(candidate[..., 0], candidate[..., 1], 1 - t, t)
+    # The shader writes zero errors for cells whose candidate equals their own vector.
+    own_mean = uniform_filter(np.where(differs, own_mean, 0), 3, mode='nearest')
+    candidate_mean = uniform_filter(np.where(differs, candidate_mean, 0), 3, mode='nearest')
+    own_worst = worst_error(pair, field[..., 0], field[..., 1], t)
+    candidate_worst = worst_error(pair, candidate[..., 0], candidate[..., 1], t)
+    textured = texture_grid(pair) > RELOCK_TEXTURED
+    plausible = np.where(textured, candidate_mean <= own_mean + RELOCK_MARGIN,
+                         candidate_worst - own_worst <= RELOCK_MARGIN)
+    return median3(np.where((differs & plausible)[..., None], candidate, field))
+
+
+def projected(pair, t, relocking=True):
     gh, gw = pair.gh, pair.gw
     # matchMain, quantised like the 12-bit error packed by splatMain.
     error = pair.block_error(pair.grid[..., 0], pair.grid[..., 1], 0.0, 1.0)
@@ -183,24 +269,11 @@ def projected(pair, t):
     field, valid = field.reshape(gh, gw, 2), valid.reshape(gh, gw)
     # fillMain: holes take the mean of valid neighbours at each stride.
     reach = max(1, int(round(4.0 / pair.cell_w)))      # the strides are tuned for the 4-pixel grid
-    strides = [s * reach for s in FILL_STRIDES] + ([1, 1] if reach > 1 else [])
-    for stride in strides:
-        total, count = np.zeros_like(field), np.zeros((gh, gw), np.float32)
-        for dy in (-stride, 0, stride):
-            for dx in (-stride, 0, stride):
-                if dx == 0 and dy == 0:
-                    continue
-                rows = np.clip(np.arange(gh) + dy, 0, gh - 1)
-                columns = np.clip(np.arange(gw) + dx, 0, gw - 1)
-                neighbour_valid = valid[rows][:, columns]
-                total += np.where(neighbour_valid[..., None], field[rows][:, columns], 0)
-                count += neighbour_valid
-        grow = ~valid & (count > 0)
-        field[grow] = total[grow] / count[grow][:, None]
-        valid = valid | grow
-    field[~valid] = 0
+    field = fill(field, valid, [s * reach for s in FILL_STRIDES] + ([1, 1] if reach > 1 else []))
     # medianFieldMain
-    field = np.stack([median_filter(field[..., c], 3, mode='nearest') for c in range(2)], -1)
+    field = median3(field)
+    if relocking:
+        field = relock(pair, field, t, reach)
     # heldMain / weightMain
     moved = uniform_filter(pair.block_error(field[..., 0], field[..., 1], 1 - t, t), 3, mode='nearest')
     still = uniform_filter(pair.block_error(0 * field[..., 0], 0 * field[..., 1], 0.0, 0.0), 3, mode='nearest')
@@ -208,7 +281,11 @@ def projected(pair, t):
     return pair.finish(pair.upsample(field), t, pair.upsample(weight), pair.upsample(moved.astype(np.float32)))
 
 
-VARIANTS = {'blend': blend, 'direct': direct, 'projected': projected}
+def plain(pair, t):
+    return projected(pair, t, relocking=False)
+
+
+VARIANTS = {'blend': blend, 'direct': direct, 'projected': projected, 'plain': plain}
 
 
 def mapping(values, convert=str):
@@ -224,7 +301,7 @@ def main():
     parser.add_argument('--clip', action='append', required=True, metavar='ID=FILE')
     parser.add_argument('--flow', action='append', required=True, metavar='ID=DIRECTORY')
     parser.add_argument('--frames', action='append', required=True, metavar='ID=N,N,...', help='worker frame ids')
-    parser.add_argument('--variants', default='blend,direct,projected')
+    parser.add_argument('--variants', default='blend,direct,plain,projected')
     parser.add_argument('--bilinear', action='store_true', help='sample moved pixels bilinearly (--flow-bilinear)')
     parser.add_argument('--width', type=int, default=1920)
     parser.add_argument('--height', type=int, default=1080)
