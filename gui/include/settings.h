@@ -619,6 +619,8 @@ class Settings : public QObject
 		PlaceboFrameMixer GetPlaceboFrameMixer() const;
 		bool GetDirectFrameMapping() const { return settings.value("settings/direct_frame_mapping", true).toBool(); }
 		void SetDirectFrameMapping(bool enabled) { settings.setValue("settings/direct_frame_mapping", enabled); }
+        bool GetLowLatencyPresent() const { return settings.value("settings/low_latency_present", false).toBool(); }
+        void SetLowLatencyPresent(bool enabled) { settings.setValue("settings/low_latency_present", enabled); }
 		void SetPlaceboFrameMixer(PlaceboFrameMixer frame_mixer);
 
 		bool GetPlaceboDeinterlaceEnabled() const;

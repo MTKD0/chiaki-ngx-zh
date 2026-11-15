@@ -16,6 +16,13 @@ int main(int argc, char **argv)
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
     Settings settings(QString{});
+    CHECK(!settings.GetLowLatencyPresent()); // Existing and fresh profiles are opt-in.
+    settings.SetLowLatencyPresent(true);
+    QSettings().sync();
+    { Settings reopened(QString{}); CHECK(reopened.GetLowLatencyPresent()); }
+    settings.SetLowLatencyPresent(false);
+    QSettings().sync();
+    { Settings reopened(QString{}); CHECK(!reopened.GetLowLatencyPresent()); }
     CHECK(!settings.GetEnhancementFrameGenerationEnabled());
     CHECK(settings.GetEnhancementFrameGenerationBackend() == 1);
     CHECK(settings.GetEnhancementFrameGenerationMultiplier() == 2);

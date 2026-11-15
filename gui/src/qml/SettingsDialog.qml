@@ -989,6 +989,25 @@ DialogView {
 
                     Label {
                         Layout.alignment: Qt.AlignRight
+                        text: qsTr("Low-Latency Presentation:")
+                    }
+
+                    C.CheckBox {
+                        objectName: "lowLatencyPresentCheck"
+                        text: qsTr("Enable (experimental)")
+                        checked: Chiaki.settings.lowLatencyPresent
+                        onToggled: Chiaki.settings.lowLatencyPresent = checked
+                        ToolTip.visible: hovered || activeFocus
+                        ToolTip.text: qsTr("Show ready frames sooner. Recommended for stable wired networks; turn off if motion becomes uneven. Requires Vulkan, Direct Mapping, VSync off, and NR, VSR and in-app frame generation off. Changes apply during streaming.")
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignRight
+                        text: qsTr("(Unchecked)")
+                    }
+
+                    Label {
+                        Layout.alignment: Qt.AlignRight
                         text: qsTr("Frame Mixer:")
                     }
 

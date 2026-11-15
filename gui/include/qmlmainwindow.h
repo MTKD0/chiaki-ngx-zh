@@ -226,6 +226,7 @@ private:
     struct DiagnosticPresentation {
         uint64_t signature;
         qint64 readyUs, selectedUs, submittedUs;
+        bool immediatePolicy;
     };
     QMutex diagnostic_presentation_mutex;
     std::vector<DiagnosticPresentation> diagnostic_presentations;
@@ -369,6 +370,7 @@ private:
     QAtomicInteger<int> present_backpressure_active = 0;
     QAtomicInteger<int> present_pace_timer_rearm = 0;
     QAtomicInteger<int> present_pacing_reset_pending = 0;
+    QAtomicInteger<int> low_latency_present_enabled = 0;
     QAtomicInteger<int> ui_priority_update_pending = 0;
     QAtomicInteger<int> overlay_interaction_active = 0;
     bool keep_video = false;

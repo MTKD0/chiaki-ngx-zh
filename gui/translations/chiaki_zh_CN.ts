@@ -3210,6 +3210,18 @@ This enables:
 <context>
     <name>SettingsDialog</name>
     <message>
+        <source>Low-Latency Presentation:</source>
+        <translation>低延迟呈现：</translation>
+    </message>
+    <message>
+        <source>Enable (experimental)</source>
+        <translation>启用（实验性）</translation>
+    </message>
+    <message>
+        <source>Show ready frames sooner. Recommended for stable wired networks; turn off if motion becomes uneven. Requires Vulkan, Direct Mapping, VSync off, and NR, VSR and in-app frame generation off. Changes apply during streaming.</source>
+        <translation>尽快显示已准备好的画面，减少等待。适合稳定的有线网络；若画面节奏不均匀，可关闭。需要使用 Vulkan、直接映射，并关闭垂直同步、NR、VSR 和应用内插帧。串流中切换即可生效。</translation>
+    </message>
+    <message>
         <location filename="../src/qml/SettingsDialog.qml" line="+20"/>
         <location filename="../src/main.cpp" line="+221"/>
         <source>Settings</source>

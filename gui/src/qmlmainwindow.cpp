@@ -3,6 +3,7 @@
 #include "../enhancement/runtime_route.h"
 #include <vector>
 #include "qmlbackend.h"
+#include "qmlsettings.h"
 #include "qmlsvgprovider.h"
 #include "../enhancement/screenshot.h"
 #include <QDateTime>
@@ -4842,6 +4843,7 @@ void QmlMainWindow::doneOpenGLContextCurrent()
 void QmlMainWindow::init(Settings *settings, bool exit_app_on_stream_exit)
 {
     bypass_frame_queue = settings->GetDirectFrameMapping();
+    low_latency_present_enabled.storeRelease(settings->GetLowLatencyPresent() ? 1 : 0);
     render_backend = settings->GetRenderBackend();
     setSurfaceType(render_backend == RenderBackend::Vulkan ? QWindow::VulkanSurface : QWindow::OpenGLSurface);
     qparams = {};
@@ -5157,6 +5159,11 @@ renderer_backend_ready:
     connect(qml_engine, &QQmlEngine::quit, this, &QWindow::close);
 
     backend = new QmlBackend(settings, this);
+    connect(backend->qmlSettings(), &QmlSettings::lowLatencyPresentChanged, this, [this]() {
+        low_latency_present_enabled.storeRelease(this->settings->GetLowLatencyPresent() ? 1 : 0);
+        present_pacing_reset_pending.storeRelease(1);
+        scheduleUpdate(true);
+    });
     stats_overlay_widget = new StatsOverlayWidget(this, backend);
     connect(backend, &QmlBackend::sessionChanged, this, [this, exit_app_on_stream_exit](StreamSession *s) {
         const bool preserve_startup_warmup = s && startup_warmup_preserve_next_session_change;
@@ -6769,12 +6776,11 @@ void QmlMainWindow::render()
     const bool stream_active = stream_session_active.loadAcquire() != 0;
     const bool timer_owned_playback = stream_active && mixer_active;
     const bool enhancement_driven = stream_active && enhancement_pipeline && enhancement_pipeline->ownsPresentation();
-    static const bool low_latency_present_enabled =
-        qEnvironmentVariable("CHIAKI_LOW_LATENCY_PRESENT") != QStringLiteral("0");
     const bool direct_low_latency = stream_active && bypass_frame_queue &&
         render_backend == RenderBackend::Vulkan && !vulkan_deferred_swap_enabled &&
         !enhancement_options.neural && !enhancement_options.frameGeneration &&
-        enhancement_options.vsrQuality == 0 && low_latency_present_enabled;
+        enhancement_options.vsrQuality == 0 &&
+        low_latency_present_enabled.loadAcquire() != 0;
     const double present_submit_interval_s = chiaki_enhancement::presentationInterval(
         stream_interval_s, present_interval_s, present_vsync_enabled, enhancement_driven,
         timer_owned_playback, direct_low_latency);
@@ -7883,7 +7889,8 @@ void QmlMainWindow::render()
                 direct_last_measured_signature = enhancement_direct_signature;
                 QMutexLocker lock(&diagnostic_presentation_mutex);
                 diagnostic_presentations.push_back({enhancement_direct_signature,
-                    direct_frame_ready_us, direct_frame_selected_us, synchronous_submit_us});
+                    direct_frame_ready_us, direct_frame_selected_us, synchronous_submit_us,
+                    direct_low_latency && !mixer_active && !present_vsync_enabled});
             }
         }
         recordGameplayPresentation(generatedPhase, statsKey);
@@ -8240,6 +8247,7 @@ void QmlMainWindow::startRendererDiagnostic()
     auto beforeSubmits = std::make_shared<quint64>(0), beforeInputs = std::make_shared<quint64>(0);
     auto sampleStartUs = std::make_shared<qint64>(0);
     auto toggled = std::make_shared<bool>(false);
+    auto latencyToggleCount = std::make_shared<int>(0);
     connect(poll,&QTimer::timeout,this,[=]() {
         const bool ready = (!mode.contains("nr") || enhancement_nr_active) &&
                            (!mode.contains("fg") || enhancement_fg_active || enhancement_status.contains("FG presentation skipped"));
@@ -8255,6 +8263,12 @@ void QmlMainWindow::startRendererDiagnostic()
             *toggled=true;
             settings->SetEnhancementFsr(false);
             updateEnhancementSettings();
+        }
+        if (*sampleStart>=0 && *latencyToggleCount<2 &&
+            qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_TOGGLE_LOW_LATENCY") &&
+            clock->elapsed()-*sampleStart>=(*latencyToggleCount+1)*1500) {
+            backend->qmlSettings()->setLowLatencyPresent(!settings->GetLowLatencyPresent());
+            ++*latencyToggleCount;
         }
         if ((*sampleStart>=0 && clock->elapsed()-*sampleStart>=sampleMs) || clock->elapsed()>sampleMs+17000) {
             feed->stop(); poll->stop();
@@ -8273,7 +8287,9 @@ void QmlMainWindow::startRendererDiagnostic()
             result["input_frames"]=qint64(*counter-*beforeInputs);
             result["submitted_frames"]=qint64(diagnostic_submit_total.loadAcquire()-*beforeSubmits);
             result["sample_seconds"]=seconds;
-            result["legacy_present"]=qEnvironmentVariable("CHIAKI_LOW_LATENCY_PRESENT") == QStringLiteral("0");
+            result["legacy_present"]=!settings->GetLowLatencyPresent();
+            result["low_latency_setting"]=settings->GetLowLatencyPresent();
+            result["low_latency_toggle_count"]=*latencyToggleCount;
             result["vsync_requested"]=settings->GetVSyncEnabled();
             result["vsync_active"]=bool(diagnostic_vsync_active.loadAcquire());
             result["immediate_policy_active"]=bool(diagnostic_immediate_active.loadAcquire());
@@ -8282,21 +8298,22 @@ void QmlMainWindow::startRendererDiagnostic()
                 QMutexLocker lock(&diagnostic_presentation_mutex);
                 samples = diagnostic_presentations;
             }
-            std::vector<double> ageMs, selectedMs, intervalMs;
+            std::vector<double> ageMs, selectedMs, intervalMs, immediateMs, pacedMs;
             QDir().mkpath(root);
             QFile csv(root+"/presentation.csv");
             csv.open(QIODevice::WriteOnly | QIODevice::Text);
             QTextStream rows(&csv);
-            rows << "signature,ready_us,selected_us,submitted_us,ready_to_submit_ms,selected_to_submit_ms\n";
+            rows << "signature,ready_us,selected_us,submitted_us,ready_to_submit_ms,selected_to_submit_ms,immediate_policy\n";
             qint64 previousSubmit = 0;
             for (const auto &s : samples) {
                 if (s.readyUs < *sampleStartUs || s.submittedUs < s.readyUs) continue;
                 ageMs.push_back((s.submittedUs-s.readyUs)/1000.0);
+                (s.immediatePolicy ? immediateMs : pacedMs).push_back(ageMs.back());
                 selectedMs.push_back((s.submittedUs-s.selectedUs)/1000.0);
                 if (previousSubmit) intervalMs.push_back((s.submittedUs-previousSubmit)/1000.0);
                 previousSubmit=s.submittedUs;
                 rows << s.signature << ',' << s.readyUs << ',' << s.selectedUs << ',' << s.submittedUs
-                     << ',' << ageMs.back() << ',' << selectedMs.back() << '\n';
+                     << ',' << ageMs.back() << ',' << selectedMs.back() << ',' << int(s.immediatePolicy) << '\n';
             }
             const auto distribution = [](std::vector<double> values) {
                 QJsonObject stats;
@@ -8314,6 +8331,8 @@ void QmlMainWindow::startRendererDiagnostic()
             // Ready means the frame reached presentFrame; this excludes decoding,
             // physical scanout and pixels. CPU submit return is not GPU completion.
             result["ready_to_submit_ms"]=distribution(ageMs);
+            result["immediate_ready_to_submit_ms"]=distribution(immediateMs);
+            result["paced_ready_to_submit_ms"]=distribution(pacedMs);
             result["selected_to_submit_ms"]=distribution(selectedMs);
             result["unique_present_interval_ms"]=distribution(intervalMs);
             result["ready_to_submit_samples"]=qint64(ageMs.size());

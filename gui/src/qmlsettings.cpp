@@ -1007,6 +1007,19 @@ void QmlSettings::setDirectFrameMapping(bool enabled)
     emit directFrameMappingChanged();
 }
 
+bool QmlSettings::lowLatencyPresent() const
+{
+    return settings->GetLowLatencyPresent();
+}
+
+void QmlSettings::setLowLatencyPresent(bool enabled)
+{
+    if (enabled == settings->GetLowLatencyPresent())
+        return;
+    settings->SetLowLatencyPresent(enabled);
+    emit lowLatencyPresentChanged();
+}
+
 void QmlSettings::setPlaceboFrameMixer(int mixer)
 {
     settings->SetPlaceboFrameMixer(static_cast<PlaceboFrameMixer>(mixer));
@@ -2004,6 +2017,7 @@ void QmlSettings::refreshAllKeys()
 void QmlSettings::refreshAllPlaceboKeys()
 {
     emit directFrameMappingChanged();
+    emit lowLatencyPresentChanged();
     emit placeboUpscalerChanged();
     emit placeboPlaneUpscalerChanged();
     emit placeboDownscalerChanged();
