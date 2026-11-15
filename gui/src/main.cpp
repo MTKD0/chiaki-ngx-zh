@@ -382,7 +382,7 @@ int RunMain(QGuiApplication &app, Settings *settings, bool exit_app_on_stream_ex
     const bool diagnostic = qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC");
     if (diagnostic) {
         const QString mode = qEnvironmentVariable("CHIAKI_RENDER_DIAGNOSTIC");
-        settings->SetVSyncEnabled(false);
+        settings->SetVSyncEnabled(qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_VSYNC") == 1);
         settings->SetDirectFrameMapping(!qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_QUEUED"));
         settings->SetEnhancementNeural(mode.contains("nr"));
         settings->SetEnhancementFrameGeneration(mode.contains("fg"));

@@ -58,6 +58,7 @@ extern "C" {
 #include <QQuickRenderControl>
 #include <QQuickGraphicsDevice>
 #include <QTimer>
+#include <QTextStream>
 #include <QWaitCondition>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -68,6 +69,7 @@ extern "C" {
 #include <mutex>
 #include <utility>
 #include <atomic>
+#include <algorithm>
 #if defined(Q_OS_MACOS)
 #include <objc/message.h>
 #endif
@@ -3062,6 +3064,7 @@ void QmlMainWindow::presentFrame(ChiakiFfmpegFrame frame, int32_t frames_lost, q
                 dropped_frames_current.fetchAndAddRelaxed(1);
             }
             direct_pending_frame = frame.frame;
+            direct_pending_ready_us = decoder_delivery_us > 0 ? decoder_delivery_us : present_entry_us;
         }
         if (!startup_warmup_frame_active)
             startup_first_real_frame_queued_pending_visibility.storeRelease(1);
@@ -6766,9 +6769,19 @@ void QmlMainWindow::render()
     const bool stream_active = stream_session_active.loadAcquire() != 0;
     const bool timer_owned_playback = stream_active && mixer_active;
     const bool enhancement_driven = stream_active && enhancement_pipeline && enhancement_pipeline->ownsPresentation();
+    static const bool low_latency_present_enabled =
+        qEnvironmentVariable("CHIAKI_LOW_LATENCY_PRESENT") != QStringLiteral("0");
+    const bool direct_low_latency = stream_active && bypass_frame_queue &&
+        render_backend == RenderBackend::Vulkan && !vulkan_deferred_swap_enabled &&
+        !enhancement_options.neural && !enhancement_options.frameGeneration &&
+        enhancement_options.vsrQuality == 0 && low_latency_present_enabled;
     const double present_submit_interval_s = chiaki_enhancement::presentationInterval(
         stream_interval_s, present_interval_s, present_vsync_enabled, enhancement_driven,
-        timer_owned_playback);
+        timer_owned_playback, direct_low_latency);
+    if (renderer_diagnostic_active.loadAcquire()) {
+        diagnostic_vsync_active.storeRelease(present_vsync_enabled ? 1 : 0);
+        diagnostic_immediate_active.storeRelease(direct_low_latency && !mixer_active && !present_vsync_enabled ? 1 : 0);
+    }
     const qint64 present_interval_us = static_cast<qint64>(qMax(1.0, vsync_duration * 1000000.0) + 0.5);
     const bool pending_overflow_waiting = hasPendingFrameOverflow();
     const bool pending_frame_waiting = snapshotQueueDepth() >= effectiveQueueDepthLimit() || hasPendingFrame();
@@ -6797,6 +6810,11 @@ void QmlMainWindow::render()
         {
             QMutexLocker locker(&direct_frame_mutex);
             std::swap(incoming, direct_pending_frame);
+            if (incoming) {
+                direct_frame_ready_us = direct_pending_ready_us;
+                direct_frame_selected_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
+                direct_pending_ready_us = 0;
+            }
             reset_direct_frame = direct_frame_reset.fetchAndStoreRelaxed(0) != 0;
         }
         if (reset_direct_frame) {
@@ -7221,7 +7239,8 @@ void QmlMainWindow::render()
     if (render_entry_us_local > 0 && render_to_start_frame_us >= render_entry_us_local)
         logLatencyStats("render_to_start_frame", render_to_start_frame_us - render_entry_us_local);
     // Submit immediately and let the swapchain / render path enforce pacing.
-    auto close_started_frame = [this, timer_owned_playback, present_interval_us, start_frame_us, depth_limit, pending_frame_waiting, pending_overflow_waiting, snapshotQueueDepth, snapshotRenderScheduleState, present_submit_interval_s, enhancement_driven](bool present) -> bool {
+    qint64 synchronous_submit_us = 0;
+    auto close_started_frame = [this, &synchronous_submit_us, timer_owned_playback, present_interval_us, start_frame_us, depth_limit, pending_frame_waiting, pending_overflow_waiting, snapshotQueueDepth, snapshotRenderScheduleState, present_submit_interval_s, enhancement_driven](bool present) -> bool {
         bool submission_ok = true;
         const qint64 submit_ready_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
         const int queue_depth_now = snapshotQueueDepth();
@@ -7309,6 +7328,7 @@ void QmlMainWindow::render()
                 }
                 else {
                     submit_us = static_cast<qint64>(chiaki_time_now_monotonic_us());
+                    synchronous_submit_us = submit_us;
             logLatencyStats("pl_swapchain_submit_frame", submit_us - submit_begin_us);
             CHIAKI_NOISY_DEBUG().nospace()
                 << "[latency] pl_swapchain_submit_frame_us=" << (submit_us - submit_begin_us)
@@ -7856,6 +7876,16 @@ void QmlMainWindow::render()
     if (enhanced_output) statsKey = chiaki_enhancement::presentationKey(enhancement_pipeline->completedFrameId(), enhancement_pipeline->outputPhase());
     const bool generatedPhase = enhanced_output && enhancement_pipeline->generatedOutput();
     if (close_started_frame(true)) {
+        if (renderer_diagnostic_active.loadAcquire()) {
+            diagnostic_submit_total.fetchAndAddRelaxed(1);
+            if (bypass_frame_queue && !enhanced_output && synchronous_submit_us > 0 &&
+                direct_frame_ready_us > 0 && direct_last_measured_signature != enhancement_direct_signature) {
+                direct_last_measured_signature = enhancement_direct_signature;
+                QMutexLocker lock(&diagnostic_presentation_mutex);
+                diagnostic_presentations.push_back({enhancement_direct_signature,
+                    direct_frame_ready_us, direct_frame_selected_us, synchronous_submit_us});
+            }
+        }
         recordGameplayPresentation(generatedPhase, statsKey);
         if (enhanced_output) enhancement_pipeline->notePresented(chiaki_time_now_monotonic_us() - render_entry_us);
     }
@@ -8160,6 +8190,14 @@ void QmlMainWindow::startRendererDiagnostic()
     const QString root = qEnvironmentVariable("CHIAKI_RENDER_DIAGNOSTIC_ROOT");
     if (root.isEmpty()) return;
     const QString mode = qEnvironmentVariable("CHIAKI_RENDER_DIAGNOSTIC");
+    const int sourceWidth = qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_WIDTH")
+        ? qBound(64, qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_WIDTH"), 3840) : 1280;
+    const int sourceHeight = qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_HEIGHT")
+        ? qBound(64, qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_HEIGHT"), 2160) : 720;
+    const int jitterMs = qMax(0, qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_JITTER_MS"));
+    const int pauseMs = qMax(0, qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_PAUSE_MS"));
+    const int sampleMs = qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_SECONDS")
+        ? qBound(3, qEnvironmentVariableIntValue("CHIAKI_RENDER_DIAGNOSTIC_SECONDS"), 60) * 1000 : 3000;
     setTitle(QStringLiteral("Chiaki renderer diagnostic"));
     setWindowState(Qt::WindowNoState);
     resize(qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_LARGE") ? 1600 : 1280, qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_LARGE") ? 900 : 720);
@@ -8173,8 +8211,8 @@ void QmlMainWindow::startRendererDiagnostic()
     feed->setTimerType(Qt::PreciseTimer);
     feed->setInterval(qMax(1, qRound(1000.0/fps)));
     auto counter = std::make_shared<quint64>(0);
-    connect(feed, &QTimer::timeout, this, [this,counter,fps]() {
-        AVFrame *frame = make_startup_warmup_frame(1280,720,false,false);
+    connect(feed, &QTimer::timeout, this, [this,counter,fps,sourceWidth,sourceHeight,jitterMs,pauseMs,feed]() {
+        AVFrame *frame = make_startup_warmup_frame(sourceWidth,sourceHeight,false,false);
         if (!frame) return;
         av_buffer_unref(&frame->opaque_ref);
         const quint64 id = ++*counter;
@@ -8186,6 +8224,12 @@ void QmlMainWindow::startRendererDiagnostic()
         ChiakiFfmpegFrame incoming = {};
         incoming.frame=frame; incoming.pts=double(id)/fps; incoming.duration=1.0/fps;
         presentFrame(incoming,0);
+        if (jitterMs)
+            feed->setInterval(qMax(1, qRound(1000.0/fps) + (id % 2 ? jitterMs : -jitterMs)));
+        if (pauseMs && id == uint64_t(fps * 2)) {
+            feed->stop();
+            QTimer::singleShot(pauseMs, feed, [feed]() { feed->start(); });
+        }
     });
     feed->start();
     auto *poll = new QTimer(this);
@@ -8193,6 +8237,8 @@ void QmlMainWindow::startRendererDiagnostic()
     auto clock = std::make_shared<QElapsedTimer>(); clock->start();
     auto sampleStart = std::make_shared<qint64>(-1);
     auto beforeReal = std::make_shared<quint64>(0), beforeFg = std::make_shared<quint64>(0);
+    auto beforeSubmits = std::make_shared<quint64>(0), beforeInputs = std::make_shared<quint64>(0);
+    auto sampleStartUs = std::make_shared<qint64>(0);
     auto toggled = std::make_shared<bool>(false);
     connect(poll,&QTimer::timeout,this,[=]() {
         const bool ready = (!mode.contains("nr") || enhancement_nr_active) &&
@@ -8201,13 +8247,16 @@ void QmlMainWindow::startRendererDiagnostic()
             *sampleStart=clock->elapsed();
             *beforeReal=diagnostic_real_total.loadAcquire();
             *beforeFg=diagnostic_fg_total.loadAcquire();
+            *beforeSubmits=diagnostic_submit_total.loadAcquire();
+            *beforeInputs=*counter;
+            *sampleStartUs=static_cast<qint64>(chiaki_time_now_monotonic_us());
         }
         if (*sampleStart>=0 && !*toggled && qEnvironmentVariableIsSet("CHIAKI_RENDER_DIAGNOSTIC_TOGGLE_FSR") && clock->elapsed()-*sampleStart>1000) {
             *toggled=true;
             settings->SetEnhancementFsr(false);
             updateEnhancementSettings();
         }
-        if ((*sampleStart>=0 && clock->elapsed()-*sampleStart>=3000) || clock->elapsed()>20000) {
+        if ((*sampleStart>=0 && clock->elapsed()-*sampleStart>=sampleMs) || clock->elapsed()>sampleMs+17000) {
             feed->stop(); poll->stop();
             const double seconds=*sampleStart>=0 ? (clock->elapsed()-*sampleStart)/1000.0 : 0;
             QJsonObject result;
@@ -8220,6 +8269,54 @@ void QmlMainWindow::startRendererDiagnostic()
             result["nr_active"]=enhancement_nr_active; result["fg_active"]=enhancement_fg_active;
             result["nr_control_enabled"]=enhancement_neural_available;
             result["status"]=enhancement_status;
+            result["source_width"]=sourceWidth; result["source_height"]=sourceHeight;
+            result["input_frames"]=qint64(*counter-*beforeInputs);
+            result["submitted_frames"]=qint64(diagnostic_submit_total.loadAcquire()-*beforeSubmits);
+            result["sample_seconds"]=seconds;
+            result["legacy_present"]=qEnvironmentVariable("CHIAKI_LOW_LATENCY_PRESENT") == QStringLiteral("0");
+            result["vsync_requested"]=settings->GetVSyncEnabled();
+            result["vsync_active"]=bool(diagnostic_vsync_active.loadAcquire());
+            result["immediate_policy_active"]=bool(diagnostic_immediate_active.loadAcquire());
+            std::vector<DiagnosticPresentation> samples;
+            {
+                QMutexLocker lock(&diagnostic_presentation_mutex);
+                samples = diagnostic_presentations;
+            }
+            std::vector<double> ageMs, selectedMs, intervalMs;
+            QDir().mkpath(root);
+            QFile csv(root+"/presentation.csv");
+            csv.open(QIODevice::WriteOnly | QIODevice::Text);
+            QTextStream rows(&csv);
+            rows << "signature,ready_us,selected_us,submitted_us,ready_to_submit_ms,selected_to_submit_ms\n";
+            qint64 previousSubmit = 0;
+            for (const auto &s : samples) {
+                if (s.readyUs < *sampleStartUs || s.submittedUs < s.readyUs) continue;
+                ageMs.push_back((s.submittedUs-s.readyUs)/1000.0);
+                selectedMs.push_back((s.submittedUs-s.selectedUs)/1000.0);
+                if (previousSubmit) intervalMs.push_back((s.submittedUs-previousSubmit)/1000.0);
+                previousSubmit=s.submittedUs;
+                rows << s.signature << ',' << s.readyUs << ',' << s.selectedUs << ',' << s.submittedUs
+                     << ',' << ageMs.back() << ',' << selectedMs.back() << '\n';
+            }
+            const auto distribution = [](std::vector<double> values) {
+                QJsonObject stats;
+                if (values.empty()) return stats;
+                std::sort(values.begin(),values.end());
+                double sum=0; for (double v : values) sum+=v;
+                const double mean=sum/values.size();
+                double variance=0; for (double v : values) variance+=(v-mean)*(v-mean);
+                const auto quantile = [&](double q) { return values[size_t(std::ceil(q*(values.size()-1)))]; };
+                stats["count"]=qint64(values.size()); stats["mean"]=mean;
+                stats["p50"]=quantile(0.5); stats["p95"]=quantile(0.95); stats["p99"]=quantile(0.99);
+                stats["min"]=values.front(); stats["max"]=values.back(); stats["stddev"]=std::sqrt(variance/values.size());
+                return stats;
+            };
+            // Ready means the frame reached presentFrame; this excludes decoding,
+            // physical scanout and pixels. CPU submit return is not GPU completion.
+            result["ready_to_submit_ms"]=distribution(ageMs);
+            result["selected_to_submit_ms"]=distribution(selectedMs);
+            result["unique_present_interval_ms"]=distribution(intervalMs);
+            result["ready_to_submit_samples"]=qint64(ageMs.size());
             QDir().mkpath(root);
             QFile file(root+"/result.json"); if(file.open(QIODevice::WriteOnly)) file.write(QJsonDocument(result).toJson());
             renderer_diagnostic_active.storeRelease(0);

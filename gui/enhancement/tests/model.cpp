@@ -42,6 +42,12 @@ int main()
     CHECK(std::abs(presentationInterval(1.0 / 30, 1.0 / 120, true, true, false) - 0.0) < 1e-9);
     CHECK(std::abs(presentationInterval(1.0 / 60, 1.0 / 120, true, false, false) - 1.0 / 60) <
           1e-9);
+    for (double fps : {30.0, 60.0}) {
+        CHECK(presentationInterval(1.0 / fps, 1.0 / 200, false, false, false, true) == 0.0);
+        CHECK(presentationInterval(1.0 / fps, 1.0 / 200, true, false, false, true) == 1.0 / fps);
+        CHECK(presentationInterval(1.0 / fps, 1.0 / 200, false, false, true, true) == 1.0 / 200);
+        CHECK(presentationInterval(1.0 / fps, 1.0 / 200, false, false, false, false) == 1.0 / fps);
+    }
     Command c;
     c.width = 1920;
     c.height = 1080;
