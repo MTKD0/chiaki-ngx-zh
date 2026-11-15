@@ -11,6 +11,7 @@
 #include <QLoggingCategory>
 #include <deque>
 #include <atomic>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -220,6 +221,14 @@ private:
     EnhancementOptions enhancement_options;
     QAtomicInteger<int> renderer_diagnostic_active = 0;
     QAtomicInteger<quint64> diagnostic_real_total = 0, diagnostic_fg_total = 0;
+    QAtomicInteger<quint64> diagnostic_submit_total = 0;
+    QAtomicInteger<int> diagnostic_vsync_active = 0, diagnostic_immediate_active = 0;
+    struct DiagnosticPresentation {
+        uint64_t signature;
+        qint64 readyUs, selectedUs, submittedUs;
+    };
+    QMutex diagnostic_presentation_mutex;
+    std::vector<DiagnosticPresentation> diagnostic_presentations;
     QAtomicInteger<int> enhancement_history_reset_requested = 0;
     QAtomicInteger<int> screenshot_requested = 0;
     QString gameplay_fps = QStringLiteral("0.0");
@@ -340,6 +349,9 @@ private:
     bool bypass_frame_queue = true;
     QMutex direct_frame_mutex;
     AVFrame *direct_pending_frame = nullptr;
+    qint64 direct_pending_ready_us = 0; // Protected with the pending frame.
+    qint64 direct_frame_ready_us = 0, direct_frame_selected_us = 0; // Render thread only.
+    uint64_t direct_last_measured_signature = 0;
     struct pl_frame direct_frame = {};
     QAtomicInteger<int> direct_frame_reset = 0;
     uint64_t ts_start = 0;

@@ -60,8 +60,13 @@ inline bool canUpscale(Extent native, Extent nr)
     return nr.width && nr.height && (nr.width < native.width || nr.height < native.height);
 }
 inline double presentationInterval(double streamInterval, double refreshInterval, bool vsync,
-                                   bool enhancementOwnsPresentation, bool mixerActive)
+                                   bool enhancementOwnsPresentation, bool mixerActive,
+                                   bool directLowLatency = false)
 {
+    // A ready direct frame has no future frame to wait for. Let arrival events
+    // pace pure streaming, while retaining the existing mixer and VSync paths.
+    if (directLowLatency && !mixerActive && !vsync)
+        return 0.0;
     if (!enhancementOwnsPresentation)
         return mixerActive ? refreshInterval : streamInterval;
     // Worker completions, FG's phase timer and the swapchain pace output. Waiting here again
