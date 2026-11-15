@@ -31,6 +31,7 @@ import argparse
 import csv
 import os
 import subprocess
+import warnings
 
 import numpy as np
 from scipy.ndimage import map_coordinates, median_filter, uniform_filter
@@ -45,6 +46,9 @@ RELOCK_FAR = 6.0            # outlierMain: pixels at 1080p from the regional vec
 RELOCK_MARGIN = 0.05        # relockMain
 RELOCK_TEXTURED = 0.04      # relockMain: local contrast above which the block mean decides
 RELOCK_STRIDES = (8, 4, 2, 1, 1)
+RELOCK_TRACKED = 0.02       # reduceMain: own contrast above which a cell's vector counts
+RELOCK_NEEDED = 3           # reduceMain: counted cells per 4x4 tile
+RELOCK_REGION_STRIDES = (1, 2, 4, 8, 16)
 DEAD_ZONE = 0.2             # interpolateDirectMain, pixels
 
 
@@ -195,23 +199,31 @@ def median3(field):
     return np.stack([median_filter(field[..., c], 3, mode='nearest') for c in range(2)], -1)
 
 
-def reduce4(field):
-    """reduceMain: component-wise median of every 4x4 tile, edge cells repeated."""
+def reduce4(field, counts):
+    """reduceMain: component-wise median of the counted cells of every 4x4 tile, edge cells
+    repeated. Returns the medians and which tiles had RELOCK_NEEDED counted cells."""
     h, w = (field.shape[0] + 3) // 4, (field.shape[1] + 3) // 4
-    padded = np.pad(field, ((0, h * 4 - field.shape[0]), (0, w * 4 - field.shape[1]), (0, 0)), mode='edge')
-    tiles = padded.reshape(h, 4, w, 4, 2).transpose(0, 2, 1, 3, 4).reshape(h, w, 16, 2)
-    return np.median(tiles, axis=2).astype(np.float32)
+    pad = ((0, h * 4 - field.shape[0]), (0, w * 4 - field.shape[1]))
+    tiles = np.pad(field, pad + ((0, 0),), mode='edge').reshape(h, 4, w, 4, 2).transpose(0, 2, 1, 3, 4)
+    tiles = tiles.reshape(h, w, 16, 2)
+    counted = np.pad(counts, pad, mode='edge').reshape(h, 4, w, 4).transpose(0, 2, 1, 3).reshape(h, w, 16)
+    enough = counted.sum(-1) >= RELOCK_NEEDED
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')                 # tiles without any counted cell
+        median = np.nanmedian(np.where(counted[..., None], tiles, np.nan), axis=2)
+    return np.where(enough[..., None], np.nan_to_num(median), 0).astype(np.float32), enough
 
 
 def texture_grid(pair):
-    """textureMain: mean absolute luma step over two pixels in the 5x5 cells around each cell."""
+    """textureMain: mean absolute luma step over two pixels in the 5x5 cells around each cell,
+    and in the cell alone."""
     luma = pair.cur @ LUMA
     cells = np.zeros((pair.gh, pair.gw), np.float32)
     for ox, oy in QUAD:
         qx, qy = pair.cx + ox * pair.cell_w, pair.cy + oy * pair.cell_h
         cells += np.abs(sample(luma, qx + 1, qy) - sample(luma, qx - 1, qy))
         cells += np.abs(sample(luma, qx, qy + 1) - sample(luma, qx, qy - 1))
-    return uniform_filter(cells, 5, mode='nearest') / 4.0
+    return uniform_filter(cells, 5, mode='nearest') / 4.0, cells / 4.0
 
 
 def worst_error(pair, vx, vy, t):
@@ -228,8 +240,11 @@ def worst_error(pair, vx, vy, t):
 
 
 def relock(pair, field, t, reach):
-    """reduceMain x2, medianFieldMain, outlierMain, fillMain, packMain, relockErrorMain, relockMain."""
-    coarse = median3(reduce4(reduce4(field)))
+    """reduceMain x2, fillMain, medianFieldMain, outlierMain, fillMain, packMain, relockErrorMain,
+    relockMain."""
+    surroundings, own = texture_grid(pair)
+    coarse, enough = reduce4(*reduce4(field, own > RELOCK_TRACKED))
+    coarse = median3(fill(coarse, enough, RELOCK_REGION_STRIDES))
     gy, gx = np.mgrid[0:pair.gh, 0:pair.gw].astype(np.float32)
     region = sample(coarse, (gx + 0.5) / 16.0, (gy + 0.5) / 16.0)
     far = RELOCK_FAR * pair.h / 1080.0
@@ -243,7 +258,7 @@ def relock(pair, field, t, reach):
     candidate_mean = uniform_filter(np.where(differs, candidate_mean, 0), 3, mode='nearest')
     own_worst = worst_error(pair, field[..., 0], field[..., 1], t)
     candidate_worst = worst_error(pair, candidate[..., 0], candidate[..., 1], t)
-    textured = texture_grid(pair) > RELOCK_TEXTURED
+    textured = surroundings > RELOCK_TEXTURED
     plausible = np.where(textured, candidate_mean <= own_mean + RELOCK_MARGIN,
                          candidate_worst - own_worst <= RELOCK_MARGIN)
     return median3(np.where((differs & plausible)[..., None], candidate, field))
