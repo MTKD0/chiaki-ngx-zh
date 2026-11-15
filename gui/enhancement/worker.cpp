@@ -1291,7 +1291,7 @@ struct Worker
                     fieldD = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
                     packedVectors = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
                     relockErrors = gpu->texture(gw, gh, DXGI_FORMAT_R16G16B16A16_FLOAT);
-                    textureGrid = gpu->texture(gw, gh, DXGI_FORMAT_R16_FLOAT);
+                    textureGrid = gpu->texture(gw, gh, DXGI_FORMAT_R16G16_FLOAT);
                 }
             }
         }
@@ -1761,13 +1761,25 @@ struct Worker
                             std::swap(field, spare);
                             if (flowRelock)
                             {
-                                // Regional motion: 16x16-cell medians, then a 3x3 median of those.
-                                gpu->run("reduceMain", field, coarseA);
-                                gpu->run("reduceMain", &coarseA, coarseB);
-                                gpu->run("medianFieldMain", &coarseB, coarseC);
+                                // Regional motion: 16x16-cell medians over the cells with contrast
+                                // above 0.02 (at least 3 per 4x4 tile, and 3 tiles per 16x16), regions
+                                // without any filled from their neighbours, then a 3x3 median.
+                                const float tracked[8] = {0.02f, 1, 3, 0, 0, 0, 0, 0};
+                                gpu->run("reduceMain", field, coarseA, &textureGrid, nullptr, nullptr, 0, 1, 1, tracked);
+                                const float counted[8] = {0, 0, 3, 0, 0, 0, 0, 0};
+                                gpu->run("reduceMain", &coarseA, coarseB, nullptr, nullptr, nullptr, 0, 1, 1, counted);
+                                Texture *region = &coarseB, *regionSpare = &coarseC;
+                                for (float stride : {1.0f, 2.0f, 4.0f, 8.0f, 16.0f})
+                                {
+                                    const float step[8] = {stride, 0, 0, 0, 0, 0, 0, 0};
+                                    gpu->run("fillMain", region, *regionSpare, nullptr, nullptr, nullptr, 0, 1, 1, step);
+                                    std::swap(region, regionSpare);
+                                }
+                                gpu->run("medianFieldMain", region, *regionSpare);
+                                std::swap(region, regionSpare);
                                 // Cells more than 6 pixels (at 1080p) from it look for a better lock.
                                 const float distance[8] = {6.0f * float(c.height) / 1080.0f, 0, 0, 0, 0, 0, 0, 0};
-                                gpu->run("outlierMain", field, fieldC, &coarseC, nullptr, nullptr, 0, 1, 1, distance);
+                                gpu->run("outlierMain", field, fieldC, region, nullptr, nullptr, 0, 1, 1, distance);
                                 Texture *candidate = &fieldC, *scratch = &fieldD;
                                 for (float stride : {8.0f, 4.0f, 2.0f, 1.0f, 1.0f})
                                 {

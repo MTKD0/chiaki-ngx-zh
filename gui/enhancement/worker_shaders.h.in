@@ -339,7 +339,10 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
 // motion takes the vector of its nearest agreeing neighbours when that fits about
 // as well. On textured surroundings the lenient block mean decides; on flat ones
 // (sky) the worst pixel does, so a thin wire keeps the motion that only it has.
-//   reduceMain       4x4 component-wise median (run twice: 16x16 cells)
+//   reduceMain       4x4 component-wise median (run twice: 16x16 cells) of the
+//                    cells that have something to track; in flat sky the flow
+//                    is noise, and counting it pulled wires off their motion
+//   fillMain         regions without such cells take their neighbours' motion
 //   medianFieldMain  on the coarse grid
 //   outlierMain      flags cells further than extraA.x pixels from the regional vector
 //   fillMain         candidate vectors for the flagged cells from their neighbours
@@ -347,24 +350,36 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
 //   relockErrorMain  block-mean and worst-pixel error of both
 //   relockMain       the decision
 // textureMain runs once per frame: local contrast of the current frame per cell.
+// a = vectors. A cell counts when extraA.y > 0.5 ? its own contrast (b.g, textureMain)
+// exceeds extraA.x : a.z > 0.5. Output z = 1 when at least extraA.z cells counted.
 [numthreads(8,8,1)] void reduceMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     int2 limit = int2(sourceSize)-1;
     float2 v[16];
-    for(int j=0;j<4;++j) for(int i=0;i<4;++i)
-        v[j*4+i] = a.Load(int3(min(int2(p.xy)*4+int2(i,j),limit),0)).xy;
-    // Median of 16 by rank: the mean of the 8th and 9th smallest, per component.
+    bool ok[16];
+    int count = 0;
+    for(int j=0;j<4;++j) for(int i=0;i<4;++i) {
+        int2 q = min(int2(p.xy)*4+int2(i,j),limit);
+        float4 s = a.Load(int3(q,0));
+        bool counts = extraA.y > 0.5 ? (b.Load(int3(q,0)).g > extraA.x) : (s.z > 0.5);
+        v[j*4+i] = s.xy;
+        ok[j*4+i] = counts;
+        count += counts ? 1 : 0;
+    }
+    if(count < int(extraA.z)) { target[p.xy] = float4(0,0,0,0); return; }
+    // Median by rank among the counted cells: the mean of the two middle ones.
+    int lowRank = (count-1)/2, highRank = count/2;
     float2 low = float2(0,0), high = float2(0,0);
     for(int n=0;n<16;++n) {
         int rx = 0, ry = 0;
         for(int m=0;m<16;++m) {
-            rx += (v[m].x < v[n].x || (v[m].x == v[n].x && m < n)) ? 1 : 0;
-            ry += (v[m].y < v[n].y || (v[m].y == v[n].y && m < n)) ? 1 : 0;
+            rx += (ok[m] && (v[m].x < v[n].x || (v[m].x == v[n].x && m < n))) ? 1 : 0;
+            ry += (ok[m] && (v[m].y < v[n].y || (v[m].y == v[n].y && m < n))) ? 1 : 0;
         }
-        if(rx == 7) low.x = v[n].x;
-        if(rx == 8) high.x = v[n].x;
-        if(ry == 7) low.y = v[n].y;
-        if(ry == 8) high.y = v[n].y;
+        if(ok[n] && rx == lowRank) low.x = v[n].x;
+        if(ok[n] && rx == highRank) high.x = v[n].x;
+        if(ok[n] && ry == lowRank) low.y = v[n].y;
+        if(ok[n] && ry == highRank) high.y = v[n].y;
     }
     target[p.xy] = float4((low+high)*0.5,1,0);
 }
@@ -427,25 +442,28 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     target[p.xy] = float4(plausible ? pair.zw : pair.xy,1,0);
 }
 // a = current real (output size). Output r = mean absolute luma step over two pixels
-// (horizontal plus vertical) in the 5x5 cells around this one.
+// (horizontal plus vertical) in the 5x5 cells around this one, g = in this cell alone.
 [numthreads(8,8,1)] void textureMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float2 size = float2(sourceSize);
     float2 cell = size/float2(outputSize);
     int2 limit = int2(outputSize)-1;
     float3 luma = float3(0.299,0.587,0.114);
-    float total = 0;
+    float total = 0, own = 0;
     for(int j=-2;j<=2;++j) for(int i=-2;i<=2;++i) {
         float2 x = (clamp(int2(p.xy)+int2(i,j),int2(0,0),limit)+0.5)*cell;
+        float here = 0;
         for(int k=0;k<4;++k) {
             float2 q = x+quad[k]*cell;
-            total += abs(dot(a.SampleLevel(clampSampler,(q+float2(1,0))/size,0).rgb-
-                             a.SampleLevel(clampSampler,(q-float2(1,0))/size,0).rgb,luma));
-            total += abs(dot(a.SampleLevel(clampSampler,(q+float2(0,1))/size,0).rgb-
-                             a.SampleLevel(clampSampler,(q-float2(0,1))/size,0).rgb,luma));
+            here += abs(dot(a.SampleLevel(clampSampler,(q+float2(1,0))/size,0).rgb-
+                            a.SampleLevel(clampSampler,(q-float2(1,0))/size,0).rgb,luma));
+            here += abs(dot(a.SampleLevel(clampSampler,(q+float2(0,1))/size,0).rgb-
+                            a.SampleLevel(clampSampler,(q-float2(0,1))/size,0).rgb,luma));
         }
+        total += here;
+        if(i == 0 && j == 0) own = here;
     }
-    target[p.xy] = float4(total/100.0,0,0,0);
+    target[p.xy] = float4(total/100.0,own/4.0,0,0);
 }
 // a = previous real, b = current real, c = field (grid). extraA.x = t.
 // Output r = block error along the vector, g = block error without motion.
