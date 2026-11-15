@@ -44,7 +44,7 @@ AGREE = (0.06, 0.20)        # blend the two samples below, use the nearer one ab
 HELD_MARGIN = 0.01          # weightMain / interpolateDirectMain
 RELOCK_FAR = 6.0            # outlierMain: pixels at 1080p from the regional vector
 RELOCK_MARGIN = 0.05        # relockMain
-RELOCK_TEXTURED = 0.04      # relockMain: local contrast above which the block mean decides
+RELOCK_TEXTURED = 0.5       # relockMain: share of trackable cells above which the block mean decides
 RELOCK_STRIDES = (8, 4, 2, 1, 1)
 RELOCK_TRACKED = 0.02       # reduceMain: own contrast above which a cell's vector counts
 RELOCK_NEEDED = 3           # reduceMain: counted cells per 4x4 tile
@@ -215,15 +215,33 @@ def reduce4(field, counts):
 
 
 def texture_grid(pair):
-    """textureMain: mean absolute luma step over two pixels in the 5x5 cells around each cell,
-    and in the cell alone."""
+    """textureMain: the share of the 5x5 cells around each cell whose contrast (mean absolute
+    luma step over two pixels) exceeds RELOCK_TRACKED, and the cell's own contrast."""
     luma = pair.cur @ LUMA
     cells = np.zeros((pair.gh, pair.gw), np.float32)
     for ox, oy in QUAD:
         qx, qy = pair.cx + ox * pair.cell_w, pair.cy + oy * pair.cell_h
         cells += np.abs(sample(luma, qx + 1, qy) - sample(luma, qx - 1, qy))
         cells += np.abs(sample(luma, qx, qy + 1) - sample(luma, qx, qy - 1))
-    return uniform_filter(cells, 5, mode='nearest') / 4.0, cells / 4.0
+    own = cells / 4.0
+    return uniform_filter((own > RELOCK_TRACKED).astype(np.float32), 5, mode='nearest'), own
+
+
+def source_error(pair, v, u, t):
+    """relockErrorMain: what a cell shows under its own vector v, followed along the candidate
+    u instead; the largest of the 16 taps, from the current and from the previous frame."""
+    worst = np.zeros((pair.gh, pair.gw), np.float32)
+    for j in range(4):
+        for i in range(4):
+            qx = pair.cx + (i * 0.25 - 0.375) * pair.cell_w
+            qy = pair.cy + (j * 0.25 - 0.375) * pair.cell_h
+            sx, sy = qx - (1 - t) * v[..., 0], qy - (1 - t) * v[..., 1]
+            worst = np.maximum(worst, np.abs(sample(pair.cur, sx, sy) -
+                                             sample(pair.prev, sx + u[..., 0], sy + u[..., 1])) @ LUMA)
+            sx, sy = qx + t * v[..., 0], qy + t * v[..., 1]
+            worst = np.maximum(worst, np.abs(sample(pair.prev, sx, sy) -
+                                             sample(pair.cur, sx - u[..., 0], sy - u[..., 1])) @ LUMA)
+    return worst
 
 
 def worst_error(pair, vx, vy, t):
@@ -241,7 +259,7 @@ def worst_error(pair, vx, vy, t):
 
 def relock(pair, field, t, reach):
     """reduceMain x2, fillMain, medianFieldMain, outlierMain, fillMain, packMain, relockErrorMain,
-    relockMain."""
+    relockMain, medianKeepMain."""
     surroundings, own = texture_grid(pair)
     coarse, enough = reduce4(*reduce4(field, own > RELOCK_TRACKED))
     coarse = median3(fill(coarse, enough, RELOCK_REGION_STRIDES))
@@ -257,11 +275,13 @@ def relock(pair, field, t, reach):
     own_mean = uniform_filter(np.where(differs, own_mean, 0), 3, mode='nearest')
     candidate_mean = uniform_filter(np.where(differs, candidate_mean, 0), 3, mode='nearest')
     own_worst = worst_error(pair, field[..., 0], field[..., 1], t)
-    candidate_worst = worst_error(pair, candidate[..., 0], candidate[..., 1], t)
+    candidate_worst = np.maximum(worst_error(pair, candidate[..., 0], candidate[..., 1], t),
+                                 source_error(pair, field, candidate, t))
     textured = surroundings > RELOCK_TEXTURED
     plausible = np.where(textured, candidate_mean <= own_mean + RELOCK_MARGIN,
                          candidate_worst - own_worst <= RELOCK_MARGIN)
-    return median3(np.where((differs & plausible)[..., None], candidate, field))
+    mixed = np.where((differs & plausible)[..., None], candidate, field)
+    return np.where((differs & ~plausible & ~textured)[..., None], mixed, median3(mixed))
 
 
 def projected(pair, t, relocking=True):

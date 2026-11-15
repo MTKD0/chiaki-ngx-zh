@@ -351,7 +351,7 @@ struct Gpu
             for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain",
                                       "matchMain", "clearBitsMain", "splatMain", "resolveMain", "fillMain",
                                       "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain",
-                                      "reduceMain", "outlierMain", "packMain", "relockErrorMain", "relockMain",
+                                      "reduceMain", "outlierMain", "packMain", "relockErrorMain", "relockMain", "medianKeepMain",
                                       "textureMain"})
                 compile(entry);
             refineShaders = true;
@@ -1731,7 +1731,11 @@ struct Worker
                     gpu->run("matchMain", &previousReal, matchError, processed, nullptr, &optical->vectors, 0,
                              outputPerFlowX, outputPerFlowY);
                     if (flowRelock)
-                        gpu->run("textureMain", processed, textureGrid);
+                    {
+                        // A cell with contrast above 0.02 has something to track.
+                        const float trackable[8] = {0.02f, 0, 0, 0, 0, 0, 0, 0};
+                        gpu->run("textureMain", processed, textureGrid, nullptr, nullptr, nullptr, 0, 1, 1, trackable);
+                    }
                 }
                 if (previousRealValid && !reset)
                     for (unsigned n = 0; n < c.fgMultiplier - 1; ++n) {
@@ -1791,12 +1795,13 @@ struct Worker
                                 const float when[8] = {t, 0, 0, 0, 0, 0, 0, 0};
                                 gpu->run("relockErrorMain", &previousReal, relockErrors, processed, &packedVectors,
                                          nullptr, 0, 1, 1, when);
-                                // Margin 0.05; surroundings with contrast above 0.04 count as textured.
-                                const float decide[8] = {0.05f, 0.04f, 0, 0, 0, 0, 0, 0};
+                                // Margin 0.05; surroundings count as textured when more than half of
+                                // the 5x5 cells are trackable.
+                                const float decide[8] = {0.05f, 0.5f, 0, 0, 0, 0, 0, 0};
                                 gpu->run("relockMain", &relockErrors, *spare, &packedVectors, &textureGrid,
                                          nullptr, 0, 1, 1, decide);
                                 std::swap(field, spare);
-                                gpu->run("medianFieldMain", field, *spare);
+                                gpu->run("medianKeepMain", field, *spare);
                                 std::swap(field, spare);
                             }
                             const float moment[8] = {t, 0, 0, 0, 0, 0, 0, 0};

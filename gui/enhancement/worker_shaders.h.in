@@ -318,12 +318,11 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     }
     target[p.xy] = count > 0.0 ? float4(sum/count,1,0) : float4(0,0,0,0);
 }
-[numthreads(8,8,1)] void medianFieldMain(uint3 p : SV_DispatchThreadID) {
-    if(any(p.xy >= outputSize)) return;
+float2 fieldMedian(uint2 at) {
     int2 limit = int2(outputSize)-1;
     float2 v[9];
     for(int j=0;j<3;++j) for(int i=0;i<3;++i)
-        v[j*3+i] = a.Load(int3(clamp(int2(p.xy)+int2(i-1,j-1),int2(0,0),limit),0)).xy;
+        v[j*3+i] = a.Load(int3(clamp(int2(at)+int2(i-1,j-1),int2(0,0),limit),0)).xy;
     SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
     SORT2(v[0],v[1]) SORT2(v[3],v[4]) SORT2(v[6],v[7])
     SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
@@ -331,14 +330,28 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     SORT2(v[3],v[6]) SORT2(v[1],v[4]) SORT2(v[2],v[5])
     SORT2(v[4],v[7]) SORT2(v[4],v[2]) SORT2(v[6],v[4])
     SORT2(v[4],v[2])
-    target[p.xy] = float4(v[4],1,0);
+    return v[4];
+}
+[numthreads(8,8,1)] void medianFieldMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    target[p.xy] = float4(fieldMedian(p.xy),1,0);
+}
+// As medianFieldMain, but cells with z = 0 keep their vector: a wire is one cell
+// wide, and the median would give it its neighbours' motion after all.
+[numthreads(8,8,1)] void medianKeepMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float4 own = a.Load(int3(p.xy,0));
+    target[p.xy] = float4(own.z > 0.5 ? fieldMedian(p.xy) : own.xy,1,0);
 }
 // --- Relocking cells that latched onto the wrong repeat of a periodic surface ---
 // On layered facades the flow locks patches one floor off: both vectors match
 // well, and the seam between the patches tears. A cell far from its region's
 // motion takes the vector of its nearest agreeing neighbours when that fits about
-// as well. On textured surroundings the lenient block mean decides; on flat ones
-// (sky) the worst pixel does, so a thin wire keeps the motion that only it has.
+// as well. Where most of the surrounding cells have something to track (a facade)
+// the lenient block mean decides. Elsewhere (a wire in the sky, also next to a
+// roofline) the worst pixel does, and what the cell shows must also be found
+// along the candidate: a vector that fetches plain sky from both frames is
+// perfectly consistent, but it moves the wire away.
 //   reduceMain       4x4 component-wise median (run twice: 16x16 cells) of the
 //                    cells that have something to track; in flat sky the flow
 //                    is noise, and counting it pulled wires off their motion
@@ -349,6 +362,7 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
 //   packMain         own and candidate vector side by side
 //   relockErrorMain  block-mean and worst-pixel error of both
 //   relockMain       the decision
+//   medianKeepMain   3x3 median, except for cells relockMain marked to keep
 // textureMain runs once per frame: local contrast of the current frame per cell.
 // a = vectors. A cell counts when extraA.y > 0.5 ? its own contrast (b.g, textureMain)
 // exceeds extraA.x : a.z > 0.5. Output z = 1 when at least extraA.z cells counted.
@@ -397,7 +411,10 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     target[p.xy] = float4(a.Load(int3(p.xy,0)).xy,b.Load(int3(p.xy,0)).xy);
 }
 // a = previous real, b = current real, c = packMain's output. extraA.x = t.
-// Output: block mean of own, of the candidate, worst pixel of own, of the candidate.
+// Output: block mean of own, of the candidate, worst pixel of own, and the larger of
+// the candidate's worst pixel and its source error: what this cell shows under its
+// own vector (in the current and in the previous frame), followed along the
+// candidate instead.
 [numthreads(8,8,1)] void relockErrorMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float4 pair = c.Load(int3(p.xy,0));
@@ -422,11 +439,18 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
                               a.SampleLevel(clampSampler,(q+t*pair.xy)/size,0).rgb),luma));
         e.w = max(e.w,dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*pair.zw)/size,0).rgb-
                               a.SampleLevel(clampSampler,(q+t*pair.zw)/size,0).rgb),luma));
+        float2 fromCurrent = q-(1.0-t)*pair.xy, fromPrevious = q+t*pair.xy;
+        e.w = max(e.w,dot(abs(b.SampleLevel(clampSampler,fromCurrent/size,0).rgb-
+                              a.SampleLevel(clampSampler,(fromCurrent+pair.zw)/size,0).rgb),luma));
+        e.w = max(e.w,dot(abs(a.SampleLevel(clampSampler,fromPrevious/size,0).rgb-
+                              b.SampleLevel(clampSampler,(fromPrevious-pair.zw)/size,0).rgb),luma));
     }
     target[p.xy] = e;
 }
 // a = relockErrorMain's output, b = packMain's output, c = textureMain's output.
-// extraA = (margin, contrast above which the surroundings count as textured).
+// extraA = (margin, share of trackable cells above which the surroundings count as
+// textured). Output z = 0 for a cell that keeps its vector on other surroundings:
+// medianKeepMain leaves it alone.
 [numthreads(8,8,1)] void relockMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float4 pair = b.Load(int3(p.xy,0));
@@ -439,10 +463,11 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     float2 worst = a.Load(int3(p.xy,0)).zw;
     bool textured = c.Load(int3(p.xy,0)).r > extraA.y;
     bool plausible = textured ? (mean.y <= mean.x+extraA.x) : (worst.y-worst.x <= extraA.x);
-    target[p.xy] = float4(plausible ? pair.zw : pair.xy,1,0);
+    target[p.xy] = float4(plausible ? pair.zw : pair.xy,(plausible || textured) ? 1.0 : 0.0,0);
 }
-// a = current real (output size). Output r = mean absolute luma step over two pixels
-// (horizontal plus vertical) in the 5x5 cells around this one, g = in this cell alone.
+// a = current real (output size). The contrast of a cell is its mean absolute luma step
+// over two pixels (horizontal plus vertical). Output r = share of the 5x5 cells around
+// this one whose contrast exceeds extraA.x, g = this cell's contrast.
 [numthreads(8,8,1)] void textureMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
     float2 size = float2(sourceSize);
@@ -460,10 +485,10 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
             here += abs(dot(a.SampleLevel(clampSampler,(q+float2(0,1))/size,0).rgb-
                             a.SampleLevel(clampSampler,(q-float2(0,1))/size,0).rgb,luma));
         }
-        total += here;
+        total += here/4.0 > extraA.x ? 1.0 : 0.0;
         if(i == 0 && j == 0) own = here;
     }
-    target[p.xy] = float4(total/100.0,own/4.0,0,0);
+    target[p.xy] = float4(total/25.0,own/4.0,0,0);
 }
 // a = previous real, b = current real, c = field (grid). extraA.x = t.
 // Output r = block error along the vector, g = block error without motion.
