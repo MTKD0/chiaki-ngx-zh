@@ -346,8 +346,10 @@ float2 fieldMedian(uint2 at) {
 // --- Relocking cells that latched onto the wrong repeat of a periodic surface ---
 // On layered facades the flow locks patches one floor off: both vectors match
 // well, and the seam between the patches tears. A cell far from its region's
-// motion takes the vector of its nearest agreeing neighbours when that fits about
-// as well. Where most of the surrounding cells have something to track (a facade)
+// motion takes the best matching vector of its nearest agreeing neighbours when
+// that fits about as well. Their mean was a few pixels off where half-wrong cells
+// were among them, and on a period of about 20 pixels that matched worse than the
+// wrong floor, so the cell kept it. Where most of the surrounding cells have something to track (a facade)
 // the lenient block mean decides. Elsewhere (a wire in the sky, also next to a
 // roofline) the worst pixel does, and what the cell shows must also be found
 // along the candidate: a vector that fetches plain sky from both frames is
@@ -358,7 +360,8 @@ float2 fieldMedian(uint2 at) {
 //   fillMain         regions without such cells take their neighbours' motion
 //   medianFieldMain  on the coarse grid
 //   outlierMain      flags cells further than extraA.x pixels from the regional vector
-//   fillMain         candidate vectors for the flagged cells from their neighbours
+//   fillBestMain     candidate vectors for the flagged cells: of the agreeing
+//                    neighbours at each stride, the one that matches best there
 //   packMain         own and candidate vector side by side
 //   relockErrorMain  block-mean and worst-pixel error of both
 //   relockMain       the decision
@@ -405,6 +408,37 @@ float2 fieldMedian(uint2 at) {
     float2 own = a.Load(int3(p.xy,0)).xy;
     float2 region = b.SampleLevel(clampSampler,(p.xy+0.5)/(16.0*float2(cw,ch)),0).xy;
     target[p.xy] = float4(own,length(own-region) > extraA.x ? 0.0 : 1.0,0);
+}
+// a = previous real, b = current real, c = outlierMain's output (z = 1 agreeing or
+// already filled). extraA = (stride in cells, t). A flagged cell takes, of its eight
+// neighbours at the stride that have a vector, the one with the lowest block error
+// at t (four taps as in relockErrorMain); without any it stays flagged.
+[numthreads(8,8,1)] void fillBestMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float4 v = c.Load(int3(p.xy,0));
+    if(v.z > 0.5) { target[p.xy] = v; return; }
+    int stride = int(extraA.x);
+    float t = extraA.y;
+    int2 limit = int2(outputSize)-1;
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    float2 x = (p.xy+0.5)*cell;
+    float3 luma = float3(0.299,0.587,0.114);
+    float best = 1e30;
+    float2 pick = float2(0,0);
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i) {
+        if(i == 0 && j == 0) continue;
+        float4 n = c.Load(int3(clamp(int2(p.xy)+int2(i,j)*stride,int2(0,0),limit),0));
+        if(n.z <= 0.5) continue;
+        float e = 0;
+        for(int k=0;k<4;++k) {
+            float2 q = x+quad[k]*cell;
+            e += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*n.xy)/size,0).rgb-
+                         a.SampleLevel(clampSampler,(q+t*n.xy)/size,0).rgb),luma);
+        }
+        if(e < best) { best = e; pick = n.xy; }
+    }
+    target[p.xy] = best < 1e30 ? float4(pick,1,0) : float4(0,0,0,0);
 }
 [numthreads(8,8,1)] void packMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;

@@ -351,7 +351,7 @@ struct Gpu
             for (const char *entry : {"refineMain", "confidenceMain", "guidedMotionMain", "fallbackMain", "selectMain", "interpolateMain", "interpolateDirectMain",
                                       "matchMain", "clearBitsMain", "splatMain", "resolveMain", "fillMain",
                                       "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain",
-                                      "reduceMain", "outlierMain", "packMain", "relockErrorMain", "relockMain", "medianKeepMain",
+                                      "reduceMain", "outlierMain", "fillBestMain", "packMain", "relockErrorMain", "relockMain", "medianKeepMain",
                                       "textureMain"})
                 compile(entry);
             refineShaders = true;
@@ -1784,11 +1784,15 @@ struct Worker
                                 // Cells more than 6 pixels (at 1080p) from it look for a better lock.
                                 const float distance[8] = {6.0f * float(c.height) / 1080.0f, 0, 0, 0, 0, 0, 0, 0};
                                 gpu->run("outlierMain", field, fieldC, region, nullptr, nullptr, 0, 1, 1, distance);
+                                // Each flagged cell takes the agreeing neighbour vector that matches
+                                // best there, not their mean: on a facade the mean of a mixed
+                                // neighbourhood fitted worse than the wrong floor.
                                 Texture *candidate = &fieldC, *scratch = &fieldD;
                                 for (float stride : {8.0f, 4.0f, 2.0f, 1.0f, 1.0f})
                                 {
-                                    const float step[8] = {stride * reach, 0, 0, 0, 0, 0, 0, 0};
-                                    gpu->run("fillMain", candidate, *scratch, nullptr, nullptr, nullptr, 0, 1, 1, step);
+                                    const float step[8] = {stride * reach, t, 0, 0, 0, 0, 0, 0};
+                                    gpu->run("fillBestMain", &previousReal, *scratch, processed, candidate, nullptr, 0, 1,
+                                             1, step);
                                     std::swap(candidate, scratch);
                                 }
                                 gpu->run("packMain", field, packedVectors, candidate);

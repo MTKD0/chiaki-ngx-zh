@@ -195,6 +195,32 @@ def fill(field, valid, strides):
     return field
 
 
+def fill_best(pair, field, valid, strides, t):
+    """fillBestMain: invalid cells take, of their valid neighbours at each stride, the vector
+    with the lowest block error at t (first in row order on ties)."""
+    gh, gw = field.shape[:2]
+    field, valid = field.copy(), valid.copy()
+    for stride in strides:
+        best = np.full((gh, gw), np.inf, np.float32)
+        pick = np.zeros_like(field)
+        for dy in (-stride, 0, stride):
+            for dx in (-stride, 0, stride):
+                if dx == 0 and dy == 0:
+                    continue
+                rows = np.clip(np.arange(gh) + dy, 0, gh - 1)
+                columns = np.clip(np.arange(gw) + dx, 0, gw - 1)
+                v = field[rows][:, columns]
+                e = np.where(valid[rows][:, columns], pair.block_error(v[..., 0], v[..., 1], 1 - t, t), np.inf)
+                better = e < best
+                best = np.where(better, e, best)
+                pick = np.where(better[..., None], v, pick)
+        grow = ~valid & np.isfinite(best)
+        field[grow] = pick[grow]
+        valid = valid | grow
+    field[~valid] = 0
+    return field
+
+
 def median3(field):
     return np.stack([median_filter(field[..., c], 3, mode='nearest') for c in range(2)], -1)
 
@@ -258,7 +284,7 @@ def worst_error(pair, vx, vy, t):
 
 
 def relock(pair, field, t, reach):
-    """reduceMain x2, fillMain, medianFieldMain, outlierMain, fillMain, packMain, relockErrorMain,
+    """reduceMain x2, fillMain, medianFieldMain, outlierMain, fillBestMain, packMain, relockErrorMain,
     relockMain, medianKeepMain."""
     surroundings, own = texture_grid(pair)
     coarse, enough = reduce4(*reduce4(field, own > RELOCK_TRACKED))
@@ -267,7 +293,7 @@ def relock(pair, field, t, reach):
     region = sample(coarse, (gx + 0.5) / 16.0, (gy + 0.5) / 16.0)
     far = RELOCK_FAR * pair.h / 1080.0
     outlier = np.sqrt(((field - region) ** 2).sum(-1)) > far
-    candidate = fill(field, ~outlier, [s * reach for s in RELOCK_STRIDES])
+    candidate = fill_best(pair, field, ~outlier, [s * reach for s in RELOCK_STRIDES], t)
     differs = (candidate != field).any(-1)
     own_mean = pair.block_error(field[..., 0], field[..., 1], 1 - t, t)
     candidate_mean = pair.block_error(candidate[..., 0], candidate[..., 1], 1 - t, t)
