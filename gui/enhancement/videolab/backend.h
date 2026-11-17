@@ -44,9 +44,10 @@ inline QString workerSwitches()
              value("CHIAKI_ENHANCEMENT_MOTION_REFINE", "off"), value("CHIAKI_ENHANCEMENT_FG_FALLBACK", "off"),
              value("CHIAKI_ENHANCEMENT_FG_BACKEND", "dlss"), value("CHIAKI_ENHANCEMENT_FG_VECTORS", "flow"),
              value("CHIAKI_ENHANCEMENT_FLOW_SCALE", "1"), value("CHIAKI_ENHANCEMENT_FLOW_SELECT", "projected")) +
-           QStringLiteral(" flow_sharp=%1 flow_grid=%2 flow_backward=%3 flow_relock=%4")
+           QStringLiteral(" flow_sharp=%1 flow_grid=%2 flow_backward=%3 flow_relock=%4 flow_second=%5")
                .arg(value("CHIAKI_ENHANCEMENT_FLOW_SHARP", "on"), value("CHIAKI_ENHANCEMENT_FLOW_GRID", "4"),
-                    value("CHIAKI_ENHANCEMENT_FLOW_BACKWARD", "off"), value("CHIAKI_ENHANCEMENT_FLOW_RELOCK", "on"));
+                    value("CHIAKI_ENHANCEMENT_FLOW_BACKWARD", "off"), value("CHIAKI_ENHANCEMENT_FLOW_RELOCK", "on"),
+                    value("CHIAKI_ENHANCEMENT_FLOW_SECOND", "on"));
 }
 
 // A frame generator under test. One real frame goes in; its generated phases (1-based) and then

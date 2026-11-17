@@ -352,7 +352,7 @@ struct Gpu
                                       "matchMain", "clearBitsMain", "splatMain", "resolveMain", "fillMain",
                                       "medianFieldMain", "heldMain", "weightMain", "interpolateProjectedMain",
                                       "reduceMain", "outlierMain", "fillBestMain", "packMain", "relockErrorMain", "relockMain", "medianKeepMain",
-                                      "textureMain"})
+                                      "textureMain", "secondMain", "secondMedianMain"})
                 compile(entry);
             refineShaders = true;
         }
@@ -940,6 +940,13 @@ struct Worker
     //   CHIAKI_ENHANCEMENT_FLOW_BACKWARD=on     also estimate previous -> current flow. It is
     //                                          only dumped (flowb_*.s16); no shader uses it yet.
     std::unique_ptr<OpticalFlow> opticalBack;
+    // Second candidate (secondMain in worker_shaders.h.in): NVOFA at half the flow
+    // resolution follows motion that the full-resolution search misses. Projected
+    // backend only; CHIAKI_ENHANCEMENT_FLOW_SECOND=off disables it. Dumps write its grid
+    // as flowh_<frame>_<width>x<height>.s16 (S10.5 pixels at halfFlowSize).
+    std::unique_ptr<OpticalFlow> opticalHalf;
+    Extent halfFlowSize{};
+    Gpu::Readback halfReadback;
     unsigned flowGrid = 4;
     static unsigned requestedFlowGrid()
     {
@@ -1032,6 +1039,7 @@ struct Worker
             fg.reset();
             vsr.reset();
             clearNr();
+            opticalHalf.reset();
             opticalBack.reset();
             optical.reset();
         }
@@ -1295,6 +1303,24 @@ struct Worker
                 }
             }
         }
+        opticalHalf.reset();
+        if (flowProjected && environmentSwitch(L"CHIAKI_ENHANCEMENT_FLOW_SECOND") != 0)
+        {
+            try
+            {
+                halfFlowSize.width = std::max(64u, ((flowSize.width + 1) / 2 + 1u) & ~1u);
+                halfFlowSize.height = std::max(64u, ((flowSize.height + 1) / 2 + 1u) & ~1u);
+                opticalHalf.reset(new OpticalFlow);
+                opticalHalf->init(*gpu, halfFlowSize.width, halfFlowSize.height, flowLevel(halfFlowSize));
+                std::fprintf(stderr, "[RTX][Flow] second flow size=%ux%u cells=%ux%u\n", halfFlowSize.width,
+                    halfFlowSize.height, opticalHalf->vectors.width, opticalHalf->vectors.height);
+            }
+            catch (const std::exception &e)
+            {
+                std::fprintf(stderr, "[RTX][Flow] second flow unavailable: %s\n", e.what());
+                opticalHalf.reset();
+            }
+        }
         if (optical)
             readDumpSettings();
         keepPreviousReal = fgFallback || flowBackend;
@@ -1310,7 +1336,8 @@ struct Worker
         std::fprintf(stderr, "[RTX][Motion] refine=%u fg_fallback=%u fg_backend=%s fg_vectors=%s flow_select=%s\n",
             unsigned(motionRefine), unsigned(fgFallback), flowBackend ? "flow" : "dlss", zeroVectors ? "zero" : "flow",
             flowProjected ? "projected" : flowCandidates ? "candidates" : "direct");
-        std::fprintf(stderr, "[RTX][Motion] flow_relock=%u\n", unsigned(flowProjected && flowRelock));
+        std::fprintf(stderr, "[RTX][Motion] flow_relock=%u flow_second=%u\n", unsigned(flowProjected && flowRelock),
+            unsigned(bool(opticalHalf)));
         // Handles are returned even when a feature is unavailable: the bridge can
         // still be validated, and no DLL load is represented as feature success.
         for (unsigned i = 0; i < SlotCount; ++i)
@@ -1400,6 +1427,8 @@ struct Worker
             optical->prepare(*gpu, *flowInput);
             if (opticalBack)
                 opticalBack->prepare(*gpu, *flowInput);
+            if (opticalHalf)
+                opticalHalf->prepare(*gpu, *flowInput);
             gpu->submit();
             auto sample = gpu->readback(thumbnailReadback, thumbnail);
             if (!reset && sample.size() == previousThumbnail.size())
@@ -1430,6 +1459,8 @@ struct Worker
             optical->execute(*gpu, reset);
             if (opticalBack)
                 opticalBack->execute(*gpu, reset);
+            if (opticalHalf)
+                opticalHalf->execute(*gpu, reset);
             if (!history)
                 std::fprintf(stderr, "[RTX][Worker] optical-flow completed\n");
         }
@@ -1459,6 +1490,20 @@ struct Worker
                 std::fprintf(stderr, "[RTX][Dump] frame=%llu backward=%ux%u written=%u\n",
                     static_cast<unsigned long long>(c.frameId), opticalBack->vectors.width, opticalBack->vectors.height,
                     unsigned(bool(backwardOut)));
+            }
+            if (opticalHalf)
+            {
+                gpu->begin();
+                gpu->queueReadback(halfReadback, opticalHalf->vectors);
+                gpu->submit();
+                const auto second = gpu->readback(halfReadback, opticalHalf->vectors);
+                const fs::path secondFile = dumpDirectory / ("flowh_" + std::to_string(c.frameId) + "_" +
+                    std::to_string(opticalHalf->vectors.width) + "x" + std::to_string(opticalHalf->vectors.height) + ".s16");
+                std::ofstream secondOut(secondFile, std::ios::binary);
+                secondOut.write(reinterpret_cast<const char *>(second.data()), static_cast<std::streamsize>(second.size()));
+                std::fprintf(stderr, "[RTX][Dump] frame=%llu second=%ux%u flow=%ux%u written=%u\n",
+                    static_cast<unsigned long long>(c.frameId), opticalHalf->vectors.width, opticalHalf->vectors.height,
+                    halfFlowSize.width, halfFlowSize.height, unsigned(bool(secondOut)));
             }
             std::fprintf(stderr, "[RTX][Dump] frame=%llu reset=%u flow=%ux%u input=%ux%u output=%ux%u written=%u\n",
                 static_cast<unsigned long long>(c.frameId), unsigned(reset), optical->vectors.width, optical->vectors.height,
@@ -1807,6 +1852,19 @@ struct Worker
                                 std::swap(field, spare);
                                 gpu->run("medianKeepMain", field, *spare);
                                 std::swap(field, spare);
+                            }
+                            if (opticalHalf)
+                            {
+                                // A cell whose vector matches worse than 0.05 at t takes the half-
+                                // resolution vector when that matches better and below 0.08, and lies
+                                // within 2 pixels (at 1080p) of the half-resolution 3x3 median.
+                                const float halfX = float(c.width) / halfFlowSize.width;
+                                const float halfY = float(c.height) / halfFlowSize.height;
+                                const float second[8] = {t, 0.05f, 0.08f, 2.0f * float(c.height) / 1080.0f,
+                                                         halfX, halfY, 4.0f * halfX, 4.0f * halfY};
+                                gpu->run("secondMain", &previousReal, *spare, processed, field, &opticalHalf->vectors,
+                                         0, 1, 1, second);
+                                gpu->run("secondMedianMain", spare, *field);
                             }
                             const float moment[8] = {t, 0, 0, 0, 0, 0, 0, 0};
                             gpu->run("heldMain", &previousReal, errorPair, processed, field, nullptr, 0, 1, 1, moment);

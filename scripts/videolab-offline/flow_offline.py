@@ -16,11 +16,15 @@ scored against source frame 4*(N-2)+p. Source frames are counted from 0.
 
 Variants:
     projected  matchMain, splatMain, resolveMain, fillMain, medianFieldMain, the relocking
-               passes (reduceMain .. relockMain, textureMain), heldMain, weightMain and
-               interpolateProjectedMain of worker_shaders.h.in
+               passes (reduceMain .. relockMain, textureMain), the second candidate
+               (secondMain, secondMedianMain; only with --half-flow), heldMain, weightMain
+               and interpolateProjectedMain of worker_shaders.h.in
+    single     projected without the second candidate (CHIAKI_ENHANCEMENT_FLOW_SECOND=off)
     plain      projected without relocking (CHIAKI_ENHANCEMENT_FLOW_RELOCK=off)
     direct     interpolateDirectMain
     blend      cross-fade of the two real frames
+
+--half-flow takes the dump's flowh_*.s16 grids (NVOFA at half the flow resolution).
 
 Requires NumPy, SciPy and an ffmpeg executable. PSNR is over RGB, 100 dB when
 identical, as in the video lab. The model mirrors the shaders' arithmetic but is not
@@ -85,6 +89,22 @@ def load_flow(directory, frame):
     return np.where(invalid[..., None], 0, raw).astype(np.float32) / 32.0, invalid
 
 
+def load_half(directory, frame, width, height):
+    """flowh_<frame>_*.s16 (or flow_ of a --flow-scale 0.5 dump) as (vectors in output pixels,
+    invalid mask, output pixels per half-grid cell), for a full-resolution flow of width x height:
+    the worker computes the second flow at ((size + 1) / 2 + 1) & ~1."""
+    names = [n for n in os.listdir(directory) if (n.startswith(f'flowh_{frame}_') or n.startswith(f'flow_{frame}_'))
+             and n.endswith('.s16')]
+    if len(names) != 1:
+        raise SystemExit(f'{directory}: expected one half-resolution flow file for worker frame {frame}, found {len(names)}')
+    grid_w, grid_h = (int(v) for v in names[0][:-4].split('_')[2].split('x'))
+    raw = np.fromfile(os.path.join(directory, names[0]), dtype='<i2').reshape(grid_h, grid_w, 2)
+    invalid = (raw[..., 0] == -32768) | (raw[..., 1] == -32768)
+    half_w, half_h = max(64, ((width + 1) // 2 + 1) & ~1), max(64, ((height + 1) // 2 + 1) & ~1)
+    scale = np.array([width / half_w, height / half_h], np.float32)
+    return np.where(invalid[..., None], 0, raw).astype(np.float32) / 32.0 * scale, invalid, 4.0 * scale
+
+
 def sample(image, x, y, order=1):
     """Sample at pixel-centre coordinates (0.5 is the first texel centre), clamped."""
     cx = np.clip(x - 0.5, 0, image.shape[1] - 1)
@@ -114,6 +134,7 @@ class Pair:
 
     def __init__(self, prev, cur, grid, invalid, order):
         self.prev, self.cur, self.grid, self.invalid, self.order = prev, cur, grid, invalid, order
+        self.half = None    # load_half(...) for the second candidate
         self.h, self.w = cur.shape[:2]
         self.gh, self.gw = grid.shape[:2]
         ys, xs = np.mgrid[0:self.h, 0:self.w].astype(np.float32)
@@ -310,7 +331,28 @@ def relock(pair, field, t, reach):
     return np.where((differs & ~plausible & ~textured)[..., None], mixed, median3(mixed))
 
 
-def projected(pair, t, relocking=True):
+SECOND = (0.05, 0.08, 2.0)  # secondMain: own error above, candidate error below, pixels at 1080p from the median
+
+
+def second(pair, field, t):
+    """secondMain, secondMedianMain: a cell whose vector matches worse than SECOND[0] at t takes the
+    half-resolution vector under its centre (nearest) where that matches better, below SECOND[1],
+    and within SECOND[2] pixels of the 3x3 median of those vectors; then the cells at or next to a
+    taken one get the 3x3 median."""
+    vectors, invalid, cell = pair.half
+    ix = np.clip(np.floor(pair.cx / cell[0]).astype(int), 0, vectors.shape[1] - 1)
+    iy = np.clip(np.floor(pair.cy / cell[1]).astype(int), 0, vectors.shape[0] - 1)
+    v, bad = vectors[iy, ix], invalid[iy, ix]
+    own = pair.block_error(field[..., 0], field[..., 1], 1 - t, t)
+    e = pair.block_error(v[..., 0], v[..., 1], 1 - t, t)
+    take = ~bad & (own > SECOND[0]) & (e < own) & (e < SECOND[1])
+    take &= np.sqrt(((v - median3(v)) ** 2).sum(-1)) <= SECOND[2] * pair.h / 1080.0
+    out = np.where(take[..., None], v, field)
+    near = uniform_filter(take.astype(np.float32), 3, mode='nearest') > 0
+    return np.where(near[..., None], median3(out), out)
+
+
+def projected(pair, t, relocking=True, seconding=True):
     gh, gw = pair.gh, pair.gw
     # matchMain, quantised like the 12-bit error packed by splatMain.
     error = pair.block_error(pair.grid[..., 0], pair.grid[..., 1], 0.0, 1.0)
@@ -335,6 +377,8 @@ def projected(pair, t, relocking=True):
     field = median3(field)
     if relocking:
         field = relock(pair, field, t, reach)
+    if seconding and pair.half is not None:
+        field = second(pair, field, t)
     # heldMain / weightMain
     moved = uniform_filter(pair.block_error(field[..., 0], field[..., 1], 1 - t, t), 3, mode='nearest')
     still = uniform_filter(pair.block_error(0 * field[..., 0], 0 * field[..., 1], 0.0, 0.0), 3, mode='nearest')
@@ -346,7 +390,11 @@ def plain(pair, t):
     return projected(pair, t, relocking=False)
 
 
-VARIANTS = {'blend': blend, 'direct': direct, 'projected': projected, 'plain': plain}
+def single(pair, t):
+    return projected(pair, t, seconding=False)
+
+
+VARIANTS = {'blend': blend, 'direct': direct, 'projected': projected, 'single': single, 'plain': plain}
 
 
 def mapping(values, convert=str):
@@ -362,6 +410,8 @@ def main():
     parser.add_argument('--clip', action='append', required=True, metavar='ID=FILE')
     parser.add_argument('--flow', action='append', required=True, metavar='ID=DIRECTORY')
     parser.add_argument('--frames', action='append', required=True, metavar='ID=N,N,...', help='worker frame ids')
+    parser.add_argument('--half-flow', action='append', metavar='ID=DIRECTORY',
+                        help='second-candidate grids (flowh_*.s16); without it projected = single')
     parser.add_argument('--variants', default='blend,direct,plain,projected')
     parser.add_argument('--bilinear', action='store_true', help='sample moved pixels bilinearly (--flow-bilinear)')
     parser.add_argument('--width', type=int, default=1920)
@@ -370,7 +420,7 @@ def main():
     parser.add_argument('--out', required=True, help='per-frame CSV')
     parser.add_argument('--save', help='directory for the generated frames as PNG (needs Pillow)')
     args = parser.parse_args()
-    clips, flows = mapping(args.clip), mapping(args.flow)
+    clips, flows, halves = mapping(args.clip), mapping(args.flow), mapping(args.half_flow)
     frames = mapping(args.frames, lambda text: [int(v) for v in text.split(',')])
     names = args.variants.split(',')
     order = 1 if args.bilinear else 3
@@ -382,6 +432,9 @@ def main():
             grid, invalid = load_flow(flows[clip], n)
             pair = Pair(source[4 * (n - 2)].astype(np.float32) / 255, source[4 * (n - 1)].astype(np.float32) / 255,
                         grid, invalid, order)
+            if clip in halves:
+                # The dump is from a flow at the frame's resolution (--flow-scale 1).
+                pair.half = load_half(halves[clip], n, args.width, args.height)
             for phase in (1, 2, 3):
                 truth = source[4 * (n - 2) + phase]
                 row = {'clip': clip, 'worker_frame': n, 'phase': phase, 'previous_source_frame': 4 * (n - 2),
