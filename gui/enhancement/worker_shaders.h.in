@@ -318,11 +318,8 @@ static const float2 quad[4] = {float2(-0.25,-0.25),float2(0.25,-0.25),float2(-0.
     }
     target[p.xy] = count > 0.0 ? float4(sum/count,1,0) : float4(0,0,0,0);
 }
-float2 fieldMedian(uint2 at) {
-    int2 limit = int2(outputSize)-1;
-    float2 v[9];
-    for(int j=0;j<3;++j) for(int i=0;i<3;++i)
-        v[j*3+i] = a.Load(int3(clamp(int2(at)+int2(i-1,j-1),int2(0,0),limit),0)).xy;
+// Component-wise median of nine vectors.
+float2 median9(float2 v[9]) {
     SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
     SORT2(v[0],v[1]) SORT2(v[3],v[4]) SORT2(v[6],v[7])
     SORT2(v[1],v[2]) SORT2(v[4],v[5]) SORT2(v[7],v[8])
@@ -331,6 +328,13 @@ float2 fieldMedian(uint2 at) {
     SORT2(v[4],v[7]) SORT2(v[4],v[2]) SORT2(v[6],v[4])
     SORT2(v[4],v[2])
     return v[4];
+}
+float2 fieldMedian(uint2 at) {
+    int2 limit = int2(outputSize)-1;
+    float2 v[9];
+    for(int j=0;j<3;++j) for(int i=0;i<3;++i)
+        v[j*3+i] = a.Load(int3(clamp(int2(at)+int2(i-1,j-1),int2(0,0),limit),0)).xy;
+    return median9(v);
 }
 [numthreads(8,8,1)] void medianFieldMain(uint3 p : SV_DispatchThreadID) {
     if(any(p.xy >= outputSize)) return;
@@ -523,6 +527,71 @@ float2 fieldMedian(uint2 at) {
         if(i == 0 && j == 0) own = here;
     }
     target[p.xy] = float4(total/25.0,own/4.0,0,0);
+}
+// --- Second candidate from a half-resolution flow -----------------------------
+// At full resolution NVOFA misses motion much larger than its search, such as a
+// character jumping 80 pixels between two 30 fps frames, and gives those cells their
+// background's motion: the generated frame shows the character twice. A second
+// NVOFA pass at half resolution follows such motion. After relocking, a cell whose
+// vector matches badly at t takes the half-resolution vector at its position when that
+// matches better, also matches well in absolute terms, and agrees with the
+// half-resolution vectors around it. Without the absolute limit, cells behind an
+// occlusion (both vectors wrong) swapped one tear for another.
+//   secondMain        the choice; z = 1 where the cell took the candidate
+//   secondMedianMain  3x3 median of the cells at or next to a taken one
+// optical = half-resolution raw grid. extraB.xy = output pixels per half-flow pixel,
+// extraB.zw = output pixels per half-grid cell. The cell under x, nearest; invalid
+// vectors read as zero.
+float2 halfVector(float2 x, out bool valid) {
+    uint hw, hh;
+    optical.GetDimensions(hw,hh);
+    int2 q = clamp(int2(floor(x/extraB.zw)),int2(0,0),int2(hw,hh)-1);
+    int2 raw = optical.Load(int3(q,0));
+    valid = raw.x != -32768 && raw.y != -32768;
+    return valid ? float2(raw)/32.0*extraB.xy : float2(0,0);
+}
+// a = previous real, b = current real, c = field (grid). extraA = (t, own block error
+// above which a cell looks at the candidate, limit of the candidate's block error,
+// largest distance in output pixels from the 3x3 median of the half-resolution vectors).
+[numthreads(8,8,1)] void secondMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    float2 own = c.Load(int3(p.xy,0)).xy;
+    float t = extraA.x;
+    float2 size = float2(sourceSize);
+    float2 cell = size/float2(outputSize);
+    float2 x = (p.xy+0.5)*cell;
+    bool valid;
+    float2 v = halfVector(x,valid);
+    float3 luma = float3(0.299,0.587,0.114);
+    float eOwn = 0, e = 0;
+    for(int k=0;k<4;++k) {
+        float2 q = x+quad[k]*cell;
+        eOwn += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*own)/size,0).rgb-
+                        a.SampleLevel(clampSampler,(q+t*own)/size,0).rgb),luma);
+        e += dot(abs(b.SampleLevel(clampSampler,(q-(1.0-t)*v)/size,0).rgb-
+                     a.SampleLevel(clampSampler,(q+t*v)/size,0).rgb),luma);
+    }
+    eOwn *= 0.25;
+    e *= 0.25;
+    bool take = valid && eOwn > extraA.y && e < eOwn && e < extraA.z;
+    if(take) {
+        int2 limit = int2(outputSize)-1;
+        float2 around[9];
+        bool unused;
+        for(int j=0;j<3;++j) for(int i=0;i<3;++i)
+            around[j*3+i] = halfVector((clamp(int2(p.xy)+int2(i-1,j-1),int2(0,0),limit)+0.5)*cell,unused);
+        take = length(v-median9(around)) <= extraA.w;
+    }
+    target[p.xy] = float4(take ? v : own,take ? 1.0 : 0.0,0);
+}
+// a = secondMain's output.
+[numthreads(8,8,1)] void secondMedianMain(uint3 p : SV_DispatchThreadID) {
+    if(any(p.xy >= outputSize)) return;
+    int2 limit = int2(outputSize)-1;
+    bool near = false;
+    for(int j=-1;j<=1;++j) for(int i=-1;i<=1;++i)
+        near = near || a.Load(int3(clamp(int2(p.xy)+int2(i,j),int2(0,0),limit),0)).z > 0.5;
+    target[p.xy] = float4(near ? fieldMedian(p.xy) : a.Load(int3(p.xy,0)).xy,1,0);
 }
 // a = previous real, b = current real, c = field (grid). extraA.x = t.
 // Output r = block error along the vector, g = block error without motion.

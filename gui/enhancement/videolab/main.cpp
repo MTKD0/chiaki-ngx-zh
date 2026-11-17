@@ -419,6 +419,7 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
     add("flow-select", "Flow backend variant: projected (default), direct or candidates.", "variant");
     add("flow-bilinear", "Flow backend: sample moved pixels bilinearly instead of Catmull-Rom.");
     add("no-flow-relock", "Flow backend: keep cells that latched onto the wrong repeat of a periodic surface.");
+    add("no-flow-second", "Flow backend: no second, half-resolution optical flow for motion the first one misses.");
     add("flow-grid", "NVOFA output grid in pixels: 1, 2 or 4 (default).", "pixels");
     add("flow-backward", "Also estimate previous-to-current flow; written by --dump-flow as flowb_*.s16.");
     add("dump-flow", "Write the worker's raw optical-flow grids (.s16) into this directory.", "dir");
@@ -538,6 +539,8 @@ bool parseOptions(const QStringList &arguments, LabOptions &o)
         qputenv("CHIAKI_ENHANCEMENT_FLOW_SHARP", "off");
     if (parser.isSet("no-flow-relock"))
         qputenv("CHIAKI_ENHANCEMENT_FLOW_RELOCK", "off");
+    if (parser.isSet("no-flow-second"))
+        qputenv("CHIAKI_ENHANCEMENT_FLOW_SECOND", "off");
     if (parser.isSet("flow-grid"))
     {
         const QString grid = parser.value("flow-grid");
